@@ -1,11 +1,12 @@
 import os
 from datetime import timedelta
 from pathlib import Path
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = os.getenv("DEBUG", "1") == "1"
+DEBUG = os.getenv("DEBUG", "0") == "0"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 CSRF_TRUSTED_ORIGINS = [o for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
@@ -45,12 +46,27 @@ TEMPLATES = [{
 }]
 # PostgreSQL em produção: o select_for_update() usado na reserva de vagas
 # não tem efeito real no SQLite.
-if os.getenv("DATABASE_URL"):
-    import dj_database_url
-    DATABASES = {"default": dj_database_url.config(conn_max_age=600, ssl_require=not DEBUG)}
-else:
-    DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3",
-                             "NAME": BASE_DIR / "db.sqlite3"}}
+# if os.getenv("DATABASE_URL"):
+#     import dj_database_url
+#     DATABASES = {"default": dj_database_url.config(conn_max_age=600, ssl_require=not DEBUG)}
+# else:
+#     DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3",
+#                              "NAME": BASE_DIR / "db.sqlite3"}}
+#
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+POSTGRES_LOCALLY = True
+if not DEBUG or POSTGRES_LOCALLY:
+    DATABASES['default'] = dj_database_url.parse(
+        'DATABASE_URL')
+
+
 AUTH_USER_MODEL = "partners.User"
 LANGUAGE_CODE = "pt"
 TIME_ZONE = "UTC"

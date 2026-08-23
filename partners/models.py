@@ -59,7 +59,7 @@ class ApiKey(models.Model):
             last_four=raw[-4:],
             key_hash=_hash(raw),
         )
-        return key, raw  # raw só existe aqui — nunca mais
+        return key, raw  # raw só existe aqui, nunca mais
 
     @classmethod
     def resolve(cls, raw: str):
