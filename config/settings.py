@@ -65,7 +65,7 @@ POSTGRES_LOCALLY = True
 
 if not DEBUG or POSTGRES_LOCALLY:
     DATABASES['default'] = dj_database_url.parse(
-        'os.getenv("DATABASE_URL")'
+        os.getenv("DATABASE_URL")
     )
 
 
