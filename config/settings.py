@@ -6,7 +6,7 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = os.getenv("DEBUG", "0") == "0"
+DEBUG = False
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 CSRF_TRUSTED_ORIGINS = [o for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
@@ -62,9 +62,11 @@ DATABASES = {
 }
 
 POSTGRES_LOCALLY = True
+
 if not DEBUG or POSTGRES_LOCALLY:
     DATABASES['default'] = dj_database_url.parse(
-        os.getenv("DATABASE_URL"))
+        'postgresql://postgres:brRIZgVGtoILwrvBKWpTcjGENRDLeUDn@postgres.railway.internal:5432/railway'
+    )
 
 
 AUTH_USER_MODEL = "partners.User"
