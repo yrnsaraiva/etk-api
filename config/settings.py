@@ -65,7 +65,7 @@ POSTGRES_LOCALLY = True
 
 if not DEBUG or POSTGRES_LOCALLY:
     DATABASES['default'] = dj_database_url.parse(
-        'postgresql://postgres:brRIZgVGtoILwrvBKWpTcjGENRDLeUDn@postgres.railway.internal:5432/railway'
+        'os.getenv("DATABASE_URL")'
     )
 
 
