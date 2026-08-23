@@ -64,7 +64,7 @@ DATABASES = {
 POSTGRES_LOCALLY = True
 if not DEBUG or POSTGRES_LOCALLY:
     DATABASES['default'] = dj_database_url.parse(
-        'DATABASE_URL')
+        os.getenv("DATABASE_URL"))
 
 
 AUTH_USER_MODEL = "partners.User"
