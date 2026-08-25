@@ -6,7 +6,7 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = True
+DEBUG = False
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 CSRF_TRUSTED_ORIGINS = [o for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
@@ -61,7 +61,7 @@ DATABASES = {
     }
 }
 
-POSTGRES_LOCALLY = False
+POSTGRES_LOCALLY = True
 
 if not DEBUG or POSTGRES_LOCALLY:
     DATABASES['default'] = dj_database_url.parse(
@@ -99,7 +99,7 @@ PAYMENT_PROVIDERS = {
     "fake": "payments.providers.fake.FakeProvider",
 }
 DEBITOPAY = {
-    "BASE_URL": os.getenv("DEBITOPAY_BASE_URL", "https://api.debitopay.com"),
+    "BASE_URL": os.getenv("DEBITOPAY_BASE_URL", "https://gyqoaningqhurhvdugne.supabase.co/functions/v1"),
     "SECRET_KEY": os.getenv("DEBITOPAY_SECRET_KEY", ""),
     "WEBHOOK_SECRET": os.getenv("DEBITOPAY_WEBHOOK_SECRET", ""),
     "SIGNATURE_HEADER": os.getenv("DEBITOPAY_SIGNATURE_HEADER", "X-Debito-Signature"),
