@@ -49,8 +49,14 @@ class PaymentProvider(ABC):
     @abstractmethod
     def create_charge(self, *, amount: Decimal, currency: str, reference: str,
                       phone: str, method: str, description: str,
-                      callback_url: str) -> Charge:
-        """Inicia a cobrança. `reference` é o nosso id — serve de chave de idempotência."""
+                      callback_url: str, customer_name: str = "",
+                      customer_email: str = "", customer_phone: str = "") -> Charge:
+        """Inicia a cobrança. `reference` é o nosso id — serve de chave de idempotência.
+
+        customer_name/customer_email/customer_phone são opcionais e servem
+        para gateways que precisam destes dados no Hosted Checkout (ex.:
+        cartões, PayFast). Providers que não precisam podem ignorá-los.
+        """
 
     @abstractmethod
     def fetch_charge(self, reference: str) -> Charge:

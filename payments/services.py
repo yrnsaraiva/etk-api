@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | None = None) -> Charge:
     """Cria a cobrança no gateway e guarda a referência no bilhete."""
     provider = get_provider(provider_name)
+    # NOTA: assume ticket.issued_to.get_full_name() / .email — confirma que
+    # estes atributos existem no teu modelo de utilizador antes de assumir
+    # que isto está correcto; ajusta se os nomes forem outros.
+    customer_name = ticket.issued_to.get_full_name() if ticket.issued_to else ""
+    customer_email = getattr(ticket.issued_to, "email", "") if ticket.issued_to else ""
     charge = provider.create_charge(
         amount=ticket.amount,
         currency=ticket.currency,
@@ -33,6 +38,9 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
         method=ticket.payment_method,
         description=f"{ticket.event.name} — {ticket.price.name}",
         callback_url=callback_url,
+        customer_name=customer_name,
+        customer_email=customer_email,
+        customer_phone=ticket.phone,
     )
     Ticket.objects.filter(pk=ticket.pk).update(
         provider=provider.name,

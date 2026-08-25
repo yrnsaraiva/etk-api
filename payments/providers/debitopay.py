@@ -149,13 +149,20 @@ class DebitoPayProvider(PaymentProvider):
 
     # --------------------------------------------------------------- mapeamento
     @staticmethod
-    def _charge_from_create(data: dict) -> Charge:
+    def _charge_from_create(data: dict, *, amount: Decimal, currency: str) -> Charge:
+        # A resposta de criação (mpesa/emola/mkesh/cartões) NÃO devolve amount
+        # nem currency — só payment_id, status, reference e, para cartões,
+        # checkout_url. Sem o fallback, isto ficava sempre Decimal("0") / MZN,
+        # mesmo para uma cobrança PayFast em ZAR. Usamos o que nós pedimos,
+        # e só preferimos o valor da resposta se o gateway algum dia o enviar.
         status = STATUS_MAP.get(data.get("status", ""), PENDING)
+        resp_amount = data.get("amount")
+        resp_currency = data.get("currency")
         return Charge(
             reference=str(data.get("payment_id") or ""),
             status=status,
-            amount=Decimal(str(data.get("amount"))) if data.get("amount") is not None else Decimal("0"),
-            currency=(data.get("currency") or "MZN").upper(),
+            amount=Decimal(str(resp_amount)) if resp_amount is not None else amount,
+            currency=(resp_currency or currency or "MZN").upper(),
             checkout_url=data.get("checkout_url") or "",
             instructions=data.get("reference", ""),
             raw=data,
@@ -174,7 +181,8 @@ class DebitoPayProvider(PaymentProvider):
 
     # ------------------------------------------------------------------- API
     def create_charge(self, *, amount, currency, reference, phone, method,
-                      description, callback_url) -> Charge:
+                      description, callback_url, customer_name="",
+                      customer_email="", customer_phone="") -> Charge:
         gateway_method = PAYMENT_METHOD_MAP.get(method, method or "mpesa")
         payload = {
             "action": "process",
@@ -185,17 +193,27 @@ class DebitoPayProvider(PaymentProvider):
             "currency": currency,
             "source": "gateway",
             "source_id": str(reference),      # a nossa correlação, não idempotência HTTP
-            "phone": phone,
         }
+        if customer_name:
+            payload["customer_name"] = customer_name
+        if customer_email:
+            payload["customer_email"] = customer_email
+        if customer_phone:
+            payload["customer_phone"] = customer_phone
+
         if gateway_method in ("mpesa", "emola", "mkesh"):
+            # A doc não usa customer_phone nos exemplos de mobile money — o
+            # número que importa aqui é "phone" (o alvo do USSD/STK push).
             payload["phone"] = phone
         else:
             # visa_mastercard / payfast redirecionam o cliente de volta —
             # não existe callback_url por pedido nesta API, só return_url.
+            # "phone" não é usado por estes métodos na doc, por isso não o
+            # enviamos (evita mandar um campo estranho ao gateway).
             payload["return_url"] = callback_url
 
         body = self._request(payload, idempotency_key=str(reference))
-        return self._charge_from_create(body)
+        return self._charge_from_create(body, amount=Decimal(str(amount)), currency=currency)
 
     def fetch_charge(self, reference: str) -> Charge:
         body = self._request({"action": "check-status", "payment_id": reference})
