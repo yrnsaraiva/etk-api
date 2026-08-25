@@ -185,7 +185,7 @@ class DebitoPayProvider(PaymentProvider):
             "currency": currency,
             "source": "gateway",
             "source_id": str(reference),      # a nossa correlação, não idempotência HTTP
-            "customer_phone": phone,
+            "phone": phone,
         }
         if gateway_method in ("mpesa", "emola", "mkesh"):
             payload["phone"] = phone

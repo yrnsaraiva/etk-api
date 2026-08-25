@@ -11,7 +11,7 @@ ev = Event.objects.create(
     description="Corrida de 5 km seguida de after run.",
     category="social_run", date=timezone.now() + timedelta(days=30),
     image_url="https://example.com/lastwinter.jpeg",
-    province="Beira", location_details="Noctis", status=Event.Status.PUBLISHED,
+    province="Maputo", location_details="Noctis", status=Event.Status.PUBLISHED,
 )
 Price.objects.create(event=ev, name="Inscrição", amount=300, quantity_total=2)
 key, raw = ApiKey.issue(org, label="site runwithbroto")

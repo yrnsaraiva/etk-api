@@ -9,6 +9,7 @@ ETK_TOKEN = sys.argv[1]
 EVENT_ID = sys.argv[2]
 TIMEOUT = 30
 
+
 # ---------- copiado de apps/events/views.py ----------
 def _etk_request(method, path, json=None, timeout=TIMEOUT):
     url = f"{ETK_BASE}{path}"
@@ -19,21 +20,26 @@ def _etk_request(method, path, json=None, timeout=TIMEOUT):
     resp.raise_for_status()
     return resp.json()
 
+
 def _get_events_from_api():
     data = _etk_request("GET", "/back/borrow/external/events")
     return data.get("data", [])
+
 
 def _get_event_from_api(event_id):
     data = _etk_request("GET", f"/back/borrow/external/events/{event_id}")
     return data.get("data", {})
 
+
 def _create_ticket_in_api(payload):
     return _etk_request("POST", "/back/borrow/external/tickets", json=payload)
+
 
 def _parse_datetime(value):
     if not value: return None
     if value.endswith('Z'): value = value[:-1] + '+00:00'
     return datetime.fromisoformat(value)
+
 
 def _build_event_context(event_data):
     start_at = _parse_datetime(event_data.get("date"))
@@ -52,6 +58,7 @@ def _build_event_context(event_data):
         "confirmed_count": event_data.get("totalTicketsPurchased") or 0,
     }
 # ---------- fim da copia ----------
+
 
 print("1. event_list      :", [e["name"] for e in _get_events_from_api()])
 
