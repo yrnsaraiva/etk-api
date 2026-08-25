@@ -54,19 +54,26 @@ TEMPLATES = [{
 #                              "NAME": BASE_DIR / "db.sqlite3"}}
 #
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DEBUG:
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL não configurada em produção")
+
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=False,
+        )
     }
-}
-
-POSTGRES_LOCALLY = True
-
-if not DEBUG or POSTGRES_LOCALLY:
-    DATABASES['default'] = dj_database_url.parse(
-        'postgresql://postgres:brRIZgVGtoILwrvBKWpTcjGENRDLeUDn@postgres.railway.internal:5432/railway'
-    )
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 AUTH_USER_MODEL = "partners.User"
 LANGUAGE_CODE = "pt"
