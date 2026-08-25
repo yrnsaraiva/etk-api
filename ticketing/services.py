@@ -50,6 +50,8 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
 
     return Ticket.objects.create(
         price=price,
+        amount=price.amount,          # congelado aqui
+        currency=price.currency,
         issued_to=issued_to,
         phone=phone,
         full_name=full_name,
@@ -75,7 +77,7 @@ def confirm_payment(ticket: Ticket, *, provider: str, provider_reference: str,
 
     PaymentAttempt.objects.create(
         ticket=ticket, provider=provider, provider_reference=provider_reference,
-        amount=ticket.price.amount, succeeded=True, raw_payload=payload or {},
+        amount=ticket.amount, succeeded=True, raw_payload=payload or {},
     )
     ticket.payment = Ticket.Payment.PAID
     ticket.paid_at = timezone.now()

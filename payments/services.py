@@ -26,8 +26,8 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
     """Cria a cobrança no gateway e guarda a referência no bilhete."""
     provider = get_provider(provider_name)
     charge = provider.create_charge(
-        amount=ticket.price.amount,
-        currency=ticket.price.currency,
+        amount=ticket.amount,
+        currency=ticket.currency,
         reference=ticket.id,                     # o nosso id é a chave de idempotência
         phone=ticket.phone,
         method=ticket.payment_method,
@@ -42,7 +42,7 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
     )
     PaymentAttempt.objects.create(
         ticket=ticket, provider=provider.name, provider_reference=charge.reference,
-        amount=ticket.price.amount, succeeded=False, raw_payload=charge.raw,
+        amount=ticket.amount, succeeded=False, raw_payload=charge.raw,
     )
     return charge
 
@@ -80,13 +80,13 @@ def _apply(event) -> str:
 
     if event.status == SUCCEEDED:
         # --- verificação anti-fraude: o valor pago tem de bater com o devido ---
-        if event.amount is not None and Decimal(event.amount) != ticket.price.amount:
+        if event.amount is not None and Decimal(event.amount) != ticket.amount:
             logger.error(
                 "valor divergente no bilhete %s: cobrado %s, esperado %s",
-                ticket.id, event.amount, ticket.price.amount,
+                ticket.id, event.amount, ticket.amount,
             )
             return "Valor divergente — retido para revisão manual."
-        if event.currency and event.currency != ticket.price.currency:
+        if event.currency and event.currency != ticket.currency:
             return "Moeda divergente — retido para revisão manual."
 
         confirm_payment(
@@ -125,7 +125,7 @@ def reconcile_pending(limit: int = 200) -> dict:
             continue
 
         if charge.status == SUCCEEDED:
-            if charge.amount != ticket.price.amount:
+            if charge.amount != ticket.amount:
                 logger.error("valor divergente na reconciliação de %s", ticket.id)
                 stats["erros"] += 1
                 continue

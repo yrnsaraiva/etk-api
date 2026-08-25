@@ -24,6 +24,10 @@ class Ticket(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="issued_tickets"
     )  # o parceiro que emitiu, via chave de API
 
+    # valor congelado na emissão: alterar o preço do lote não muda bilhetes já vendidos
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default="MZN")
+
     phone = models.CharField(max_length=20, db_index=True)
     full_name = models.CharField(max_length=200, blank=True)
     email = models.EmailField(blank=True)
@@ -69,7 +73,9 @@ class Ticket(models.Model):
             "id": self.id,
             "eventId": self.price.event_id,
             "priceId": self.price_id,
-            "price": self.price.to_api(),
+            "price": {**self.price.to_api(), "amount": float(self.amount)},
+            "amount": float(self.amount),
+            "currency": self.currency,
             "phone": self.phone,
             "fullName": self.full_name,
             "email": self.email,
