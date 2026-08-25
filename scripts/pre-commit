@@ -1,0 +1,28 @@
+#!/bin/sh
+# Bloqueia commits com segredos ou base de dados.
+# Instalar:  git config core.hooksPath scripts
+
+bloqueado=0
+
+# 1. Ficheiros que nunca devem entrar
+proibidos=$(git diff --cached --name-only | grep -E '(^|/)(\.env$|db\.sqlite3|\.pem$|\.key$)')
+if [ -n "$proibidos" ]; then
+    echo "BLOQUEADO — ficheiros que não devem ser versionados:"
+    echo "$proibidos" | sed 's/^/  /'
+    bloqueado=1
+fi
+
+# 2. Padrões de segredo no conteúdo
+padroes='etk_live_[A-Za-z0-9_-]{16,}|sk_live_[A-Za-z0-9]{16,}|django-insecure-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+achados=$(git diff --cached -U0 | grep -nE "^\+.*($padroes)" | grep -v '\.env\.example')
+if [ -n "$achados" ]; then
+    echo "BLOQUEADO — parece haver um segredo no que vai commitar:"
+    echo "$achados" | cut -c1-100 | sed 's/^/  /'
+    bloqueado=1
+fi
+
+if [ $bloqueado -eq 1 ]; then
+    echo ""
+    echo "Se for um falso positivo:  git commit --no-verify"
+    exit 1
+fi

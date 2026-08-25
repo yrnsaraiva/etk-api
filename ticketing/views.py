@@ -26,14 +26,18 @@ EXTERNAL_AUTH = [ApiKeyAuthentication]
 
 
 class ExternalEventListView(APIView):
-    """GET /back/borrow/external/events"""
+    """GET /back/borrow/external/events
+
+    Só devolve os eventos do organizador dono da chave — nunca os de outro
+    parceiro. Sem este filtro, qualquer chave via a agenda inteira da plataforma.
+    """
 
     authentication_classes = EXTERNAL_AUTH
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         events = (
-            Event.objects.filter(status=Event.Status.PUBLISHED)
+            Event.objects.filter(status=Event.Status.PUBLISHED, organizer=request.user)
             .prefetch_related("prices")
             .order_by("date")
         )
@@ -43,7 +47,11 @@ class ExternalEventListView(APIView):
 
 
 class ExternalEventDetailView(APIView):
-    """GET /back/borrow/external/events/{eventId}"""
+    """GET /back/borrow/external/events/{eventId}
+
+    Mesmo isolamento: um evento de outro organizador dá 404, não 403 — não
+    confirma sequer que o ID existe, para não vazar essa informação.
+    """
 
     authentication_classes = EXTERNAL_AUTH
     permission_classes = [IsAuthenticated]
@@ -51,7 +59,7 @@ class ExternalEventDetailView(APIView):
     def get(self, request, event_id):
         try:
             event = Event.objects.prefetch_related("prices").get(
-                pk=event_id, status=Event.Status.PUBLISHED
+                pk=event_id, status=Event.Status.PUBLISHED, organizer=request.user
             )
         except Event.DoesNotExist:
             return fail("Event not found", status.HTTP_404_NOT_FOUND)

@@ -59,6 +59,19 @@ class ReservaTests(Base):
             create_ticket(price_id=self.price.id, event_id=outro.id,
                           phone="258841111111", issued_to=self.org)
 
+    def test_chave_de_outro_organizador_nao_compra_neste_evento(self):
+        """Isolamento entre parceiros: a chave do organizador B não pode criar
+        bilhete contra o lote do organizador A, mesmo com o eventId certo."""
+        outro_org = User.objects.create_user(
+            "outro_org", email="outro_org@test.local", password="Pa$$w0rd!123"
+        )
+        with self.assertRaises(TicketError):
+            create_ticket(price_id=self.price.id, event_id=self.event.id,
+                          phone="258841111111", issued_to=outro_org)
+        # nenhuma vaga foi tocada
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 0)
+
     def test_evento_em_rascunho_nao_vende(self):
         self.event.status = Event.Status.DRAFT
         self.event.save()
@@ -178,4 +191,30 @@ class ContratoExternoTests(Base):
         c = APIClient()
         c.credentials(HTTP_AUTHORIZATION=f"Bearer {raw2}")
         r = c.get(f"/back/borrow/external/tickets/{t.id}")
+        self.assertEqual(r.status_code, 404)
+
+    def test_lista_nao_mostra_eventos_de_outro_organizador(self):
+        """O bug de isolamento: sem o filtro por organizador, qualquer chave
+        via a agenda inteira da plataforma, não só os seus próprios eventos."""
+        outro_org = User.objects.create_user(
+            "outro_org", email="outro_org@test.local", password="Pa$$w0rd!123"
+        )
+        Event.objects.create(
+            organizer=outro_org, name="Evento alheio",
+            date=timezone.now() + timedelta(days=10), status=Event.Status.PUBLISHED,
+        )
+        r = self.client.get("/back/borrow/external/events")
+        nomes = [e["name"] for e in r.data["data"]]
+        self.assertIn("Festival", nomes)
+        self.assertNotIn("Evento alheio", nomes)
+
+    def test_detalhe_de_evento_alheio_da_404(self):
+        outro_org = User.objects.create_user(
+            "outro_org", email="outro_org@test.local", password="Pa$$w0rd!123"
+        )
+        alheio = Event.objects.create(
+            organizer=outro_org, name="Evento alheio",
+            date=timezone.now() + timedelta(days=10), status=Event.Status.PUBLISHED,
+        )
+        r = self.client.get(f"/back/borrow/external/events/{alheio.id}")
         self.assertEqual(r.status_code, 404)

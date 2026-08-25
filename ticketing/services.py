@@ -37,6 +37,10 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
 
     if price.event_id != event_id:
         raise TicketError("O priceId não pertence a este eventId.")
+    if price.event.organizer_id != issued_to.pk:
+        # Não revela que o evento existe noutro organizador — a mesma
+        # mensagem de "não pertence" cobre os dois casos.
+        raise TicketError("O priceId não pertence a este eventId.")
     if price.event.status != Event.Status.PUBLISHED:
         raise TicketError("Este evento não está disponível.")
     if not price.is_on_sale():
