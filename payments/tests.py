@@ -39,7 +39,7 @@ class Base(TestCase):
     def tearDown(self):
         registry.reset()
 
-    def comprar(self, phone="258845343113"):
+    def comprar(self, phone="258841111111"):
         r = self.api.post("/back/borrow/external/tickets",
                           {"priceId": self.price.id, "eventId": self.event.id,
                            "phone": phone}, format="json")

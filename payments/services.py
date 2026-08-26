@@ -1,8 +1,14 @@
 """Orquestração do pagamento. Duas regras que evitam fraude e dinheiro perdido:
 
-1. Nunca confiar no valor que vem no webhook — comparar com o bilhete.
+1. Nunca confiar no valor que vem do gateway sem comparar com o bilhete —
+   isto vale tanto para o webhook como para a confirmação síncrona.
 2. Nunca depender só do webhook — os webhooks perdem-se, e em mobile money
    perdem-se com frequência. Daí a reconciliação.
+
+A Debito Pay tem uma particularidade que não é o padrão de mercado: M-Pesa
+confirma de forma SÍNCRONA, na própria resposta ao pedido de cobrança — não
+espera por webhook. `start_payment` trata esse caso; e-Mola, mKesh e cartões
+continuam a depender do webhook ou da reconciliação.
 """
 
 import logging
@@ -23,13 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | None = None) -> Charge:
-    """Cria a cobrança no gateway e guarda a referência no bilhete."""
+    """Cria a cobrança no gateway e guarda a referência no bilhete.
+
+    Se o gateway confirmar de imediato (M-Pesa síncrono), o bilhete já sai
+    daqui como `paid` — não fica à espera de um webhook que não vai chegar.
+    """
     provider = get_provider(provider_name)
-    # NOTA: assume ticket.issued_to.get_full_name() / .email — confirma que
-    # estes atributos existem no teu modelo de utilizador antes de assumir
-    # que isto está correcto; ajusta se os nomes forem outros.
-    customer_name = ticket.issued_to.get_full_name() if ticket.issued_to else ""
-    customer_email = getattr(ticket.issued_to, "email", "") if ticket.issued_to else ""
     charge = provider.create_charge(
         amount=ticket.amount,
         currency=ticket.currency,
@@ -38,9 +43,6 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
         method=ticket.payment_method,
         description=f"{ticket.event.name} — {ticket.price.name}",
         callback_url=callback_url,
-        customer_name=customer_name,
-        customer_email=customer_email,
-        customer_phone=ticket.phone,
     )
     Ticket.objects.filter(pk=ticket.pk).update(
         provider=provider.name,
@@ -50,8 +52,17 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
     )
     PaymentAttempt.objects.create(
         ticket=ticket, provider=provider.name, provider_reference=charge.reference,
-        amount=ticket.amount, succeeded=False, raw_payload=charge.raw,
+        amount=ticket.amount, succeeded=(charge.status == SUCCEEDED), raw_payload=charge.raw,
     )
+
+    if charge.status == SUCCEEDED:
+        ticket.refresh_from_db()
+        _settle(ticket, status=SUCCEEDED, amount=charge.amount, currency=charge.currency,
+               provider_name=provider.name, reference=charge.reference, raw=charge.raw)
+    elif charge.status == FAILED:
+        ticket.refresh_from_db()
+        release(ticket, Ticket.Payment.FAILED)
+
     return charge
 
 
@@ -70,41 +81,49 @@ def handle_webhook(body: bytes, headers, provider_name: str | None = None) -> tu
     except IntegrityError:
         return False, "Evento já recebido (ignorado)."   # reenvio do gateway
 
-    outcome = _apply(event)
-    ProviderEvent.objects.filter(pk=record.pk).update(
-        processed_at=timezone.now(), outcome=outcome[:200]
-    )
-    return True, outcome
-
-
-def _apply(event) -> str:
     try:
         ticket = Ticket.objects.select_related("price__event", "issued_to").get(
             provider_charge_id=event.charge_reference
         )
     except Ticket.DoesNotExist:
         logger.warning("webhook para cobrança desconhecida: %s", event.charge_reference)
-        return "Cobrança desconhecida."
+        outcome = "Cobrança desconhecida."
+    else:
+        outcome = _settle(ticket, status=event.status, amount=event.amount,
+                          currency=event.currency, provider_name=provider.name,
+                          reference=event.charge_reference, raw=event.raw)
 
-    if event.status == SUCCEEDED:
-        # --- verificação anti-fraude: o valor pago tem de bater com o devido ---
-        if event.amount is not None and Decimal(event.amount) != ticket.amount:
+    ProviderEvent.objects.filter(pk=record.pk).update(
+        processed_at=timezone.now(), outcome=outcome[:200]
+    )
+    return True, outcome
+
+
+def _settle(ticket: Ticket, *, status: str, amount, currency: str | None,
+           provider_name: str, reference: str, raw: dict) -> str:
+    """Aplica um resultado de pagamento a um bilhete. Ponto único usado pela
+    confirmação síncrona, pelo webhook e pela reconciliação — as três formas
+    de saber que um pagamento aconteceu passam sempre pela mesma verificação.
+    """
+    if status == SUCCEEDED:
+        if amount is not None and Decimal(amount) != ticket.amount:
             logger.error(
                 "valor divergente no bilhete %s: cobrado %s, esperado %s",
-                ticket.id, event.amount, ticket.amount,
+                ticket.id, amount, ticket.amount,
             )
             return "Valor divergente — retido para revisão manual."
-        if event.currency and event.currency != ticket.currency:
+        if currency and currency != ticket.currency:
+            logger.error(
+                "moeda divergente no bilhete %s: recebida %s, esperada %s",
+                ticket.id, currency, ticket.currency,
+            )
             return "Moeda divergente — retido para revisão manual."
 
-        confirm_payment(
-            ticket, provider=event.raw.get("provider", "debitopay"),
-            provider_reference=event.charge_reference, payload=event.raw,
-        )
+        confirm_payment(ticket, provider=provider_name, provider_reference=reference, payload=raw)
         notify_partner(ticket)
         return "Pagamento confirmado."
 
-    if event.status == FAILED:
+    if status == FAILED:
         release(ticket, Ticket.Payment.FAILED)
         return "Pagamento falhou — vaga libertada."
 
@@ -114,8 +133,10 @@ def _apply(event) -> str:
 def reconcile_pending(limit: int = 200) -> dict:
     """Sonda o gateway sobre bilhetes ainda pendentes.
 
-    Correr a cada poucos minutos. É isto que salva o cliente que pagou e cujo
-    webhook nunca chegou — sem esta rotina, fica à porta com o dinheiro fora.
+    Correr a cada poucos minutos. É isto que salva o cliente que pagou por
+    e-Mola/mKesh/cartão e cujo webhook nunca chegou — sem esta rotina, fica
+    à porta com o dinheiro fora. (M-Pesa raramente chega aqui pendente,
+    porque confirma de forma síncrona em start_payment.)
     """
     provider = get_provider()
     pending = Ticket.objects.filter(
@@ -133,16 +154,13 @@ def reconcile_pending(limit: int = 200) -> dict:
             continue
 
         if charge.status == SUCCEEDED:
-            if charge.amount != ticket.amount:
-                logger.error("valor divergente na reconciliação de %s", ticket.id)
-                stats["erros"] += 1
-                continue
-            confirm_payment(
-                ticket, provider=provider.name,
-                provider_reference=charge.reference, payload=charge.raw,
-            )
-            notify_partner(ticket)
-            stats["confirmados"] += 1
+            outcome = _settle(ticket, status=SUCCEEDED, amount=charge.amount,
+                              currency=charge.currency, provider_name=provider.name,
+                              reference=charge.reference, raw=charge.raw)
+            if outcome == "Pagamento confirmado.":
+                stats["confirmados"] += 1
+            else:
+                stats["erros"] += 1     # valor/moeda divergente — fica para revisão
         elif charge.status == FAILED:
             release(ticket, Ticket.Payment.FAILED)
             stats["falhados"] += 1

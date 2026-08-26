@@ -6,7 +6,7 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = True
+DEBUG = False
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 CSRF_TRUSTED_ORIGINS = [o for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
@@ -96,10 +96,24 @@ PAYMENT_PROVIDERS = {
     "fake": "payments.providers.fake.FakeProvider",
 }
 DEBITOPAY = {
-    "BASE_URL": os.getenv("DEBITOPAY_BASE_URL", "https://gyqoaningqhurhvdugne.supabase.co/functions/v1"),
-    "SECRET_KEY": os.getenv("DEBITOPAY_SECRET_KEY", ""),
+    "BASE_URL": os.getenv(
+        "DEBITOPAY_BASE_URL",
+        "https://gyqoaningqhurhvdugne.supabase.co/functions/v1",
+    ),
+    "SECRET_KEY": os.getenv("DEBITOPAY_SECRET_KEY", ""),        # sk_live_… / sk_sandbox_…
     "WEBHOOK_SECRET": os.getenv("DEBITOPAY_WEBHOOK_SECRET", ""),
-    "SIGNATURE_HEADER": os.getenv("DEBITOPAY_SIGNATURE_HEADER", "X-Debito-Signature"),
+    "SIGNATURE_HEADER": "X-Webhook-Signature",                  # fixo, definido pela Debito Pay
+    "MERCHANT_ID": os.getenv("DEBITOPAY_MERCHANT_ID", ""),
+    # Cada método de pagamento tem a sua própria carteira (wallet_code) na
+    # Debito Pay não é o mesmo código para todos os métodos.
+    "WALLETS": {
+        "mpesa": os.getenv("DEBITOPAY_WALLET_MPESA", ""),
+        "emola": os.getenv("DEBITOPAY_WALLET_EMOLA", ""),
+        "mkesh": os.getenv("DEBITOPAY_WALLET_MKESH", ""),
+        "visa_mastercard": os.getenv("DEBITOPAY_WALLET_CARD", ""),
+        "payfast": os.getenv("DEBITOPAY_WALLET_PAYFAST", ""),
+    },
+    "DEFAULT_METHOD": os.getenv("DEBITOPAY_DEFAULT_METHOD", "mpesa"),
     "TIMEOUT": 30,
 }
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8901")

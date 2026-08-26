@@ -1,50 +1,20 @@
-"""Adaptador Debito Pay.
+"""Adaptador Debito Pay — contrato confirmado pela documentação oficial.
 
-    Reescrito com base na documentação real (payment-orchestrator API), que
-    substitui as suposições CONTRATO-? do ficheiro anterior. Resolvido:
+    https://gyqoaningqhurhvdugne.supabase.co/functions/v1/payment-orchestrator
 
-    CONTRATO-1  base_url = https://gyqoaningqhurhvdugne.supabase.co/functions/v1
-                caminho de criação = POST /payment-orchestrator, body {"action": "process", ...}
-    CONTRATO-2  Authorization: Bearer <secret key> — confirmado, sem alteração
-    CONTRATO-3  amount é number (não string); campos: merchant_id, wallet_code,
-                payment_method, amount, currency, source, source_id, phone
-                (mobile money) ou return_url (cartões/PayFast), customer_*
-    CONTRATO-4  resposta tem payment_id (usar como nossa `reference` — é o que
-                o check-status e o webhook usam para identificar a cobrança),
-                status ∈ {pending, success, failed, expired}, reference
-                (referência do provedor, ex. transactionId) e checkout_url
-                (só para visa_mastercard / payfast)
-    CONTRATO-5  cabeçalho x-webhook-signature, HMAC-SHA256 em hex — confirmado
-    CONTRATO-6  o valor assinado é o corpo cru (rawBody), não o JSON
-                re-serializado — confirmado pelo exemplo em JS da doc
+Duas particularidades deste gateway que não são o padrão de mercado, e que
+moldam o resto deste ficheiro:
 
-    Duas coisas que a doc deixa claras e que NÃO batem com o desenho anterior
-    — não escondi isto, resolvi da forma mais segura e deixei marcado:
+1. M-Pesa confirma de forma SÍNCRONA — a própria resposta ao POST inicial já
+   vem com `status: "success"`. Não há que esperar por um webhook. e-Mola,
+   mKesh e cartões continuam assíncronos (`status: "pending"`).
 
-    * Não existe `callback_url` por pedido. O webhook é configurado uma vez
-      em Settings → Webhooks do lado do gateway, não enviado no payload. O
-      `callback_url` que o resto do sistema nos passa só faz sentido aqui
-      como `return_url` — e só para os métodos que redirecionam o cliente
-      (visa_mastercard, payfast). Para mobile money (mpesa/emola/mkesh) o
-      valor é simplesmente ignorado.
-    * Os eventos de webhook `payment.refunded` e `payment.chargeback` não
-      têm equivalente em PENDING/SUCCEEDED/FAILED (base.py). Mapeei-os para
-      PENDING (não altera o bilhete) e registo um aviso — mas isto significa
-      que reembolsos e chargebacks não fazem nada automaticamente. O modelo
-      Ticket já tem Payment.REFUNDED por usar; se isto importar para o
-      negócio, precisa de um percurso próprio em services.py, não só aqui.
+2. Cada método de pagamento tem a sua própria carteira (`wallet_code`) —
+   não é a mesma carteira para M-Pesa, e-Mola e cartão. Isso mapeia-se em
+   `settings.DEBITOPAY["WALLETS"]`.
 
-    Configuração esperada em settings.DEBITOPAY:
-      BASE_URL        (default abaixo, normalmente não precisa mudar)
-      SECRET_KEY       sk_live_... / sk_test_...
-      WEBHOOK_SECRET
-      MERCHANT_ID      uuid do merchant (Settings → API)
-      WALLET_CODES     dict moeda -> wallet_code, ex. {"MZN": "12345", "ZAR": "67890"}
-                        (a doc mostra wallets por moeda/método — se só tiver
-                        uma carteira, pode usar WALLET_CODE em vez de WALLET_CODES)
-      WALLET_CODE      fallback single-wallet, usado se WALLET_CODES não tiver a moeda
-      TIMEOUT           opcional, default 30
-      SIGNATURE_HEADER  opcional, default "X-Webhook-Signature"
+O `payment_id` devolvido pelo gateway é o que usamos como `Charge.reference`
+— é ele que aparece depois no webhook e no `check-status`.
 """
 
 import hashlib
@@ -67,17 +37,6 @@ from .base import (
     WebhookEvent,
 )
 
-DEFAULT_BASE_URL = "https://gyqoaningqhurhvdugne.supabase.co/functions/v1"
-
-# Os nossos métodos internos podem não bater certo com os nomes do gateway —
-# hoje só "card" precisa de tradução; os outros já usam o nome do gateway.
-PAYMENT_METHOD_MAP = {
-    "card": "visa_mastercard",
-    "visa": "visa_mastercard",
-    "mastercard": "visa_mastercard",
-}
-
-# CONTRATO-4 confirmado: só estes quatro estados existem na API.
 STATUS_MAP = {
     "success": SUCCEEDED,
     "pending": PENDING,
@@ -85,13 +44,31 @@ STATUS_MAP = {
     "expired": FAILED,
 }
 
-# Os webhooks não trazem um campo "status" — só o nome do evento.
-EVENT_STATUS_MAP = {
+# O nosso vocabulário interno (o que vem em Ticket.payment_method) para o da
+# Debito Pay. Aceitamos sinónimos comuns para não depender de o cliente
+# escrever exatamente "visa_mastercard".
+METHOD_ALIASES = {
+    "mpesa": "mpesa",
+    "m-pesa": "mpesa",
+    "emola": "emola",
+    "e-mola": "emola",
+    "mkesh": "mkesh",
+    "m-kesh": "mkesh",
+    "card": "visa_mastercard",
+    "cartao": "visa_mastercard",
+    "cartão": "visa_mastercard",
+    "visa": "visa_mastercard",
+    "mastercard": "visa_mastercard",
+    "visa_mastercard": "visa_mastercard",
+    "payfast": "payfast",
+}
+
+# event do webhook -> o nosso estado de três valores
+EVENT_STATUS = {
     "payment.completed": SUCCEEDED,
     "payment.failed": FAILED,
-    # Sem equivalente em PENDING/SUCCEEDED/FAILED — ver nota no topo do ficheiro.
-    "payment.refunded": PENDING,
-    "payment.chargeback": PENDING,
+    "payment.refunded": FAILED,     # tratado como falha para efeitos de bilhete;
+    "payment.chargeback": FAILED,   # a diferenciação fica ao nível do relatório
 }
 
 
@@ -100,33 +77,28 @@ class DebitoPayProvider(PaymentProvider):
 
     def __init__(self):
         cfg = settings.DEBITOPAY
-        self.base_url = cfg.get("BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+        self.base_url = cfg["BASE_URL"].rstrip("/")
         self.secret_key = cfg["SECRET_KEY"]
         self.webhook_secret = cfg["WEBHOOK_SECRET"]
         self.merchant_id = cfg["MERCHANT_ID"]
-        self.wallet_codes = cfg.get("WALLET_CODES", {})
-        self.wallet_code_fallback = cfg.get("WALLET_CODE")
+        self.wallets = cfg["WALLETS"]
+        self.default_method = cfg.get("DEFAULT_METHOD", "mpesa")
         self.timeout = cfg.get("TIMEOUT", 30)
         self.signature_header = cfg.get("SIGNATURE_HEADER", "X-Webhook-Signature")
 
     # ------------------------------------------------------------------ HTTP
-    def _headers(self, idempotency_key: str = "") -> dict:
-        headers = {
+    def _headers(self) -> dict:
+        return {
             "Authorization": f"Bearer {self.secret_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if idempotency_key:
-            # Opcional segundo a doc, mas evita duplicar cobranças em retries
-            # de rede do lado do nosso servidor.
-            headers["X-Idempotency-Key"] = idempotency_key
-        return headers
 
-    def _request(self, payload: dict, *, idempotency_key: str = "") -> dict:
-        url = f"{self.base_url}/payment-orchestrator"
+    def _post(self, path: str, payload: dict) -> dict:
+        url = f"{self.base_url}{path}"
         try:
             resp = requests.post(
-                url, headers=self._headers(idempotency_key), json=payload, timeout=self.timeout
+                url, headers=self._headers(), json=payload, timeout=self.timeout
             )
         except requests.RequestException as exc:
             raise PaymentError(f"Debito Pay inacessível: {exc}") from exc
@@ -134,90 +106,81 @@ class DebitoPayProvider(PaymentProvider):
         try:
             body = resp.json()
         except ValueError:
-            body = {}
+            raise PaymentError(f"Debito Pay devolveu resposta ilegível (HTTP {resp.status_code}).")
 
-        if not resp.ok or body.get("success") is False:
-            message = body.get("error") or f"HTTP {resp.status_code}"
-            raise PaymentError(f"Debito Pay recusou o pedido: {message}")
+        if not body.get("success", resp.ok):
+            code = body.get("error", f"HTTP {resp.status_code}")
+            raise PaymentError(f"Debito Pay recusou o pedido: {code}")
         return body
 
-    def _wallet_code(self, currency: str) -> str:
-        code = self.wallet_codes.get(currency) or self.wallet_code_fallback
-        if not code:
-            raise PaymentError(f"Sem wallet_code configurado para a moeda {currency}.")
-        return code
+    def _method_for(self, method: str | None) -> str:
+        key = (method or "").strip().lower()
+        resolved = METHOD_ALIASES.get(key, self.default_method)
+        if resolved not in self.wallets or not self.wallets[resolved]:
+            raise PaymentError(
+                f"Sem wallet_code configurada para o método '{resolved}'. "
+                f"Defina DEBITOPAY_WALLET_{resolved.upper()} no ambiente."
+            )
+        return resolved
 
     # --------------------------------------------------------------- mapeamento
-    @staticmethod
-    def _charge_from_create(data: dict, *, amount: Decimal, currency: str) -> Charge:
-        # A resposta de criação (mpesa/emola/mkesh/cartões) NÃO devolve amount
-        # nem currency — só payment_id, status, reference e, para cartões,
-        # checkout_url. Sem o fallback, isto ficava sempre Decimal("0") / MZN,
-        # mesmo para uma cobrança PayFast em ZAR. Usamos o que nós pedimos,
-        # e só preferimos o valor da resposta se o gateway algum dia o enviar.
-        status = STATUS_MAP.get(data.get("status", ""), PENDING)
-        resp_amount = data.get("amount")
-        resp_currency = data.get("currency")
+    def _to_charge(self, data: dict) -> Charge:
+        raw_status = str(data.get("status") or "").lower()
         return Charge(
             reference=str(data.get("payment_id") or ""),
-            status=status,
-            amount=Decimal(str(resp_amount)) if resp_amount is not None else amount,
-            currency=(resp_currency or currency or "MZN").upper(),
+            status=STATUS_MAP.get(raw_status, PENDING),
+            amount=Decimal(str(data.get("amount"))) if data.get("amount") is not None else Decimal("0"),
+            currency=(data.get("currency") or "MZN").upper(),
             checkout_url=data.get("checkout_url") or "",
-            instructions=data.get("reference", ""),
+            instructions=self._instructions(data),
             raw=data,
         )
 
     @staticmethod
-    def _charge_from_status(payment: dict) -> Charge:
-        status = STATUS_MAP.get(payment.get("status", ""), PENDING)
-        return Charge(
-            reference=str(payment.get("id") or ""),
-            status=status,
-            amount=Decimal(str(payment.get("amount"))) if payment.get("amount") is not None else Decimal("0"),
-            currency=(payment.get("currency") or "MZN").upper(),
-            raw=payment,
-        )
+    def _instructions(data: dict) -> str:
+        status = str(data.get("status") or "").lower()
+        method = str(data.get("payment_method") or "").lower()
+        if status == "success":
+            return "Pagamento confirmado."
+        if method in ("emola", "mkesh"):
+            return "Confirme o pagamento no seu telemóvel."
+        if data.get("checkout_url"):
+            return "Complete o pagamento na página que se vai abrir."
+        return "A processar."
 
     # ------------------------------------------------------------------- API
     def create_charge(self, *, amount, currency, reference, phone, method,
-                      description, callback_url, customer_name="",
-                      customer_email="", customer_phone="") -> Charge:
-        gateway_method = PAYMENT_METHOD_MAP.get(method, method or "mpesa")
+                      description, callback_url) -> Charge:
+        method_key = self._method_for(method)
         payload = {
             "action": "process",
-            "payment_method": gateway_method,
+            "payment_method": method_key,
             "merchant_id": self.merchant_id,
-            "wallet_code": self._wallet_code(currency),
+            "wallet_code": self.wallets[method_key],
             "amount": float(amount),
             "currency": currency,
-            "source": "gateway",
-            "source_id": str(reference),      # a nossa correlação, não idempotência HTTP
+            "source": "etk-api",
+            "source_id": reference,       # o nosso Ticket.id — rastreável do lado deles
         }
-        if customer_name:
-            payload["customer_name"] = customer_name
-        if customer_email:
-            payload["customer_email"] = customer_email
-        if customer_phone:
-            payload["customer_phone"] = customer_phone
-
-        if gateway_method in ("mpesa", "emola", "mkesh"):
-            # A doc não usa customer_phone nos exemplos de mobile money — o
-            # número que importa aqui é "phone" (o alvo do USSD/STK push).
+        if method_key in ("mpesa", "emola", "mkesh"):
+            if not phone:
+                raise PaymentError(f"Telefone é obrigatório para o método '{method_key}'.")
             payload["phone"] = phone
         else:
-            # visa_mastercard / payfast redirecionam o cliente de volta —
-            # não existe callback_url por pedido nesta API, só return_url.
-            # "phone" não é usado por estes métodos na doc, por isso não o
-            # enviamos (evita mandar um campo estranho ao gateway).
+            # visa_mastercard / payfast: cartão, sem telefone obrigatório
             payload["return_url"] = callback_url
+            if description:
+                payload["customer_name"] = description[:140]
 
-        body = self._request(payload, idempotency_key=str(reference))
-        return self._charge_from_create(body, amount=Decimal(str(amount)), currency=currency)
+        body = self._post("/payment-orchestrator", payload)
+        return self._to_charge(body)
 
     def fetch_charge(self, reference: str) -> Charge:
-        body = self._request({"action": "check-status", "payment_id": reference})
-        return self._charge_from_status(body.get("payment", {}))
+        body = self._post("/payment-orchestrator", {
+            "action": "check-status", "payment_id": reference,
+        })
+        payment = body.get("payment", body)
+        return self._to_charge(payment)
 
     def parse_webhook(self, body: bytes, headers: Mapping[str, str]) -> WebhookEvent:
         signature = headers.get(self.signature_header) or headers.get(
@@ -228,27 +191,22 @@ class DebitoPayProvider(PaymentProvider):
 
         payload = json.loads(body.decode())
         event_type = str(payload.get("event") or "")
-        d = payload.get("data", {})
-        amount = d.get("amount")
-        payment_id = str(d.get("payment_id") or "")
+        data = payload.get("data", {})
+        status = EVENT_STATUS.get(event_type, PENDING)
+        amount = data.get("amount")
+
         return WebhookEvent(
-            # A doc não dá um id de evento próprio, só payment_id. Usar só o
-            # payment_id como event_id faria ProviderEvent (único por
-            # provider+event_id) descartar payment.completed seguido de
-            # payment.refunded como "reenvio" — juntar o tipo evita isso,
-            # mantendo a proteção contra reenvio do MESMO evento.
-            event_id=f"{payment_id}:{event_type}",
+            event_id=f"{data.get('payment_id', '')}:{event_type}",
             type=event_type,
-            charge_reference=payment_id,
-            status=EVENT_STATUS_MAP.get(event_type, PENDING),
+            charge_reference=str(data.get("payment_id") or ""),
+            status=status,
             amount=Decimal(str(amount)) if amount is not None else None,
-            currency=(d.get("currency") or "MZN").upper(),
+            currency=(data.get("currency") or "MZN").upper(),
             raw=payload,
         )
 
     def _signature_ok(self, body: bytes, signature: str) -> bool:
-        if not signature:
+        if not signature or not self.webhook_secret:
             return False
-        # CONTRATO-6 confirmado: assina o corpo cru, hex digest.
-        digest = hmac.new(self.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(digest, signature)
+        expected = hmac.new(self.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
