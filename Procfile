@@ -1,2 +1,1 @@
-release: python manage.py migrate --noinput && python manage.py collectstatic --noinput
-web: gunicorn config.wsgi --bind 0.0.0.0:$PORT --workers 3 --timeout 60
+web: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --log-file - --workers 2 --threads 4 --timeout 60 --worker-class gthread
