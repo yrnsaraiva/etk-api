@@ -57,7 +57,7 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
 
     if charge.status == SUCCEEDED:
         ticket.refresh_from_db()
-        _settle(ticket, status=SUCCEEDED, amount=charge.amount, currency=charge.currency,
+        _settle(ticket, status=SUCCEEDED, amount=None, currency=None,
                provider_name=provider.name, reference=charge.reference, raw=charge.raw)
     elif charge.status == FAILED:
         ticket.refresh_from_db()
