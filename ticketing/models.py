@@ -18,6 +18,8 @@ class Ticket(models.Model):
         FAILED = "failed", "Falhou"
         REFUNDED = "refunded", "Reembolsado"
 
+    ENTRY_ALLOWED = {"paid", "invited"}
+
     id = models.CharField(primary_key=True, max_length=40, editable=False)
     price = models.ForeignKey(Price, on_delete=models.PROTECT, related_name="tickets")
     issued_to = models.ForeignKey(
@@ -31,6 +33,10 @@ class Ticket(models.Model):
     phone = models.CharField(max_length=20, db_index=True)
     full_name = models.CharField(max_length=200, blank=True)
     email = models.EmailField(blank=True)
+    note = models.CharField(
+        max_length=255, blank=True,
+        help_text="ex.: Patrocinador Coca-Cola",
+    )
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VALID)
     payment = models.CharField(max_length=20, choices=Payment.choices, default=Payment.PENDING)
@@ -79,6 +85,8 @@ class Ticket(models.Model):
             "phone": self.phone,
             "fullName": self.full_name,
             "email": self.email,
+            "note": self.note,
+            "isInvite": self.payment == self.Payment.INVITED,
             "status": self.status,
             "payment": self.payment,
             "paymentMethod": self.payment_method,
@@ -90,7 +98,7 @@ class Ticket(models.Model):
         }
 
     def __str__(self):
-        return f"{self.id} — {self.phone}"
+        return f"{self.id} - {self.phone}"
 
 
 class PaymentAttempt(models.Model):

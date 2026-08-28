@@ -10,7 +10,7 @@ from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from catalog.models import Event, Price
+from catalog.models import Event, Price, make_id
 
 from .models import CheckInLog, PaymentAttempt, Ticket
 
@@ -106,6 +106,59 @@ def release(ticket: Ticket, payment_status: str) -> Ticket:
     ticket.status = Ticket.Status.EXPIRED
     ticket.save(update_fields=["payment", "status", "updated_at"])
     return ticket
+
+
+@transaction.atomic
+def issue_invites(*, price_id: str, event_id: str, organizer, quantity: int = 1,
+                  holder_name: str = "", holder_email: str = "", phone: str = "",
+                  note: str = "") -> list[Ticket]:
+    """Emite `quantity` bilhetes gratuitos para o mesmo lote — convites do
+    organizador a patrocinadores, parceiros, imprensa, etc.
+
+    Reutiliza o mesmo lock e a mesma reserva de stock do `create_ticket`: um
+    convite ocupa um lugar tal como um bilhete pago, e não pode fazer o lote
+    ultrapassar a capacidade. A diferença é que nunca passa pelo gateway de
+    pagamento — nasce já `invited`, pronto para entrar.
+
+    Ao contrário da compra, não exige que o evento esteja `PUBLISHED`: o
+    organizador pode querer convidar patrocinadores antes de abrir a venda.
+    """
+    if quantity < 1:
+        raise TicketError("A quantidade tem de ser pelo menos 1.")
+
+    try:
+        price = (
+            Price.objects.select_for_update().select_related("event").get(pk=price_id)
+        )
+    except Price.DoesNotExist:
+        raise TicketError("priceId inválido.")
+
+    if price.event_id != event_id or price.event.organizer_id != organizer.pk:
+        raise TicketError("O priceId não pertence a este eventId.")
+    if price.available < quantity:
+        raise TicketError(f"Só restam {price.available} vaga(s) neste lote.")
+
+    Price.objects.filter(pk=price.pk).update(
+        quantity_reserved=F("quantity_reserved") + quantity
+    )
+    if price.available - quantity <= 0:
+        Price.objects.filter(pk=price.pk).update(status=Price.Status.SOLD_OUT)
+
+    ids_usados: set[str] = set()
+    tickets = []
+    for _ in range(quantity):
+        novo_id = make_id("TCKT")
+        while novo_id in ids_usados:      # colisão dentro do próprio lote
+            novo_id = make_id("TCKT")
+        ids_usados.add(novo_id)
+        tickets.append(Ticket(
+            id=novo_id, price=price, issued_to=organizer, phone=phone,
+            full_name=holder_name, email=holder_email, note=note, amount=0,
+            currency=price.currency, payment_method="invite",
+            payment=Ticket.Payment.INVITED,
+        ))
+    Ticket.objects.bulk_create(tickets)
+    return tickets
 
 
 def expire_stale_tickets() -> int:

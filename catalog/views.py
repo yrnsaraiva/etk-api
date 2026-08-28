@@ -33,6 +33,14 @@ class PriceSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class InviteCreateSerializer(serializers.Serializer):
+    quantity = serializers.IntegerField(min_value=1, max_value=500, default=1)
+    holderName = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    holderEmail = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
 class EventSerializer(serializers.ModelSerializer):
     prices = PriceSerializer(many=True, read_only=True)
     total_tickets_purchased = serializers.IntegerField(read_only=True)
@@ -63,6 +71,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response({
             "count": qs.count(),
             "paid": qs.filter(payment=Ticket.Payment.PAID).count(),
+            "invited": qs.filter(payment=Ticket.Payment.INVITED).count(),
             "entered": qs.filter(entered=True).count(),
             "results": [t.to_api() for t in qs[:200]],
         })
@@ -75,6 +84,32 @@ class PriceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Price.objects.filter(event__organizer=self.request.user).select_related("event")
+
+    @action(detail=True, methods=["post"])
+    def invites(self, request, pk=None):
+        """POST /api/prices/{id}/invites/ — emite bilhetes gratuitos deste lote.
+
+        Não passa pelo gateway de pagamento; ocupa vaga tal como um bilhete
+        pago, para a capacidade do lote continuar a ser respeitada.
+        """
+        from ticketing.services import TicketError, issue_invites
+
+        price = self.get_object()  # já filtrado por organizador em get_queryset
+        s = InviteCreateSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        try:
+            tickets = issue_invites(
+                price_id=price.id, event_id=price.event_id, organizer=request.user,
+                quantity=data["quantity"], holder_name=data.get("holderName", ""),
+                holder_email=data.get("holderEmail", ""), phone=data.get("phone", ""),
+                note=data.get("note", ""),
+            )
+        except TicketError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        return Response([t.to_api() for t in tickets], status=201)
 
 
 class ApiKeySerializer(serializers.ModelSerializer):
