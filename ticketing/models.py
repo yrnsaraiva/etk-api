@@ -17,6 +17,7 @@ class Ticket(models.Model):
         PAID = "paid", "Pago"
         FAILED = "failed", "Falhou"
         REFUNDED = "refunded", "Reembolsado"
+        INVITED = "invited", "Convite"
 
     ENTRY_ALLOWED = {"paid", "invited"}
 
