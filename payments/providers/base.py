@@ -18,6 +18,21 @@ class InvalidSignature(PaymentError):
     """Webhook não assinado pelo gateway — trata-se como ataque, não como erro."""
 
 
+class ProviderUnavailable(PaymentError):
+    """Falha de transporte ao falar com o gateway (timeout, DNS, 5xx, resposta
+    ilegível). Nada no pedido está errado — vale a pena tentar de novo."""
+
+
+class PaymentDeclined(PaymentError):
+    """O gateway recebeu e avaliou o pedido, e recusou-o (saldo insuficiente,
+    método inválido, etc.). Repetir o mesmo pedido não muda o resultado —
+    quem tem de agir é o cliente (trocar de saldo, de método, de cartão)."""
+
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
 PENDING, SUCCEEDED, FAILED = "pending", "succeeded", "failed"
 
 

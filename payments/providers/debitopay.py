@@ -32,8 +32,10 @@ from .base import (
     SUCCEEDED,
     Charge,
     InvalidSignature,
+    PaymentDeclined,
     PaymentError,
     PaymentProvider,
+    ProviderUnavailable,
     WebhookEvent,
 )
 
@@ -101,16 +103,22 @@ class DebitoPayProvider(PaymentProvider):
                 url, headers=self._headers(), json=payload, timeout=self.timeout
             )
         except requests.RequestException as exc:
-            raise PaymentError(f"Debito Pay inacessível: {exc}") from exc
+            # Nunca chegou resposta — transporte, não negócio. Retryable.
+            raise ProviderUnavailable(f"Debito Pay inacessível: {exc}") from exc
 
         try:
             body = resp.json()
         except ValueError:
-            raise PaymentError(f"Debito Pay devolveu resposta ilegível (HTTP {resp.status_code}).")
+            raise ProviderUnavailable(
+                f"Debito Pay devolveu resposta ilegível (HTTP {resp.status_code})."
+            )
 
         if not body.get("success", resp.ok):
             code = body.get("error", f"HTTP {resp.status_code}")
-            raise PaymentError(f"Debito Pay recusou o pedido: {code}")
+            # O gateway respondeu e avaliou o pedido — isto é uma recusa
+            # (saldo insuficiente, método inválido, etc.), não uma falha de
+            # comunicação. Repetir o mesmo pedido não vai resolver nada.
+            raise PaymentDeclined(f"Debito Pay recusou o pedido: {code}", code=code)
         return body
 
     def _method_for(self, method: str | None) -> str:

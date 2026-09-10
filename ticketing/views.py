@@ -14,7 +14,7 @@ from config.envelope import fail, ok
 from partners.authentication import ApiKeyAuthentication
 
 from .models import Ticket
-from payments.providers.base import PaymentError
+from payments.providers.base import PaymentDeclined, PaymentError
 from payments.services import start_payment
 
 from .services import check_in, confirm_payment, create_ticket
@@ -104,9 +104,22 @@ class ExternalTicketCreateView(APIView):
                 ticket,
                 callback_url=f"{settings.PUBLIC_BASE_URL}/back/payments/webhooks/debitopay",
             )
+        except PaymentDeclined as exc:
+            # Recusa de negócio (ex.: saldo insuficiente), não falha do
+            # sistema — nível de log mais baixo para não poluir os alertas
+            # com algo que vai acontecer sempre que um cliente tenta pagar
+            # sem saldo. A vaga fica reservada até expirar, tal como no
+            # timeout: o cliente pode tentar de novo com outro saldo/método.
+            logger.info("cobrança recusada para %s: %s", ticket.id, exc)
+            return fail(
+                str(exc) or "Pagamento recusado. Verifique o saldo ou tente outro método.",
+                status.HTTP_402_PAYMENT_REQUIRED,
+                data={"ticketId": ticket.id},
+            )
         except PaymentError as exc:
-            # A vaga fica reservada até expirar: o cliente pode tentar de novo
-            # sem perder o lugar, e o expirador limpa se desistir.
+            # Falha de comunicação (timeout, DNS, resposta ilegível) — a vaga
+            # fica reservada até expirar: o cliente pode tentar de novo sem
+            # perder o lugar, e o expirador limpa se desistir.
             logger.error("falha ao iniciar cobrança de %s: %s", ticket.id, exc)
             return fail(
                 "Não foi possível iniciar o pagamento. Tente novamente.",

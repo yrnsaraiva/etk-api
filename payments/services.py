@@ -22,7 +22,7 @@ from ticketing.services import confirm_payment, release
 from ticketing.webhooks import notify_partner
 
 from .models import ProviderEvent
-from .providers.base import FAILED, PENDING, SUCCEEDED, Charge, PaymentError
+from .providers.base import FAILED, PENDING, SUCCEEDED, Charge, PaymentDeclined, PaymentError
 from .providers.registry import get_provider
 
 logger = logging.getLogger(__name__)
@@ -35,15 +35,29 @@ def start_payment(ticket: Ticket, *, callback_url: str, provider_name: str | Non
     daqui como `paid` — não fica à espera de um webhook que não vai chegar.
     """
     provider = get_provider(provider_name)
-    charge = provider.create_charge(
-        amount=ticket.amount,
-        currency=ticket.currency,
-        reference=ticket.id,                     # o nosso id é a chave de idempotência
-        phone=ticket.phone,
-        method=ticket.payment_method,
-        description=f"{ticket.event.name} — {ticket.price.name}",
-        callback_url=callback_url,
-    )
+    try:
+        charge = provider.create_charge(
+            amount=ticket.amount,
+            currency=ticket.currency,
+            reference=ticket.id,                     # o nosso id é a chave de idempotência
+            phone=ticket.phone,
+            method=ticket.payment_method,
+            description=f"{ticket.event.name} — {ticket.price.name}",
+            callback_url=callback_url,
+        )
+    except PaymentDeclined as exc:
+        # O gateway avaliou o pedido e recusou-o (ex.: saldo insuficiente) —
+        # isto NÃO é uma falha de comunicação, é um resultado de negócio.
+        # Registamos a tentativa na mesma tabela das bem-sucedidas: sem isto,
+        # a única prova de que o cliente tentou pagar era uma linha de log
+        # que rotaciona. `succeeded=False` distingue-a de uma cobrança real.
+        PaymentAttempt.objects.create(
+            ticket=ticket, provider=provider.name, provider_reference="",
+            amount=ticket.amount, succeeded=False,
+            raw_payload={"error": str(exc), "code": exc.code},
+        )
+        raise
+
     Ticket.objects.filter(pk=ticket.pk).update(
         provider=provider.name,
         provider_charge_id=charge.reference,
