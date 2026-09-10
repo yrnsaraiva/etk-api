@@ -76,9 +76,18 @@ class Ticket(models.Model):
         return f"{self.id}|{sig.hexdigest()[:16]}"
 
     def to_api(self) -> dict:
+        event = self.price.event
         return {
             "id": self.id,
             "eventId": self.price.event_id,
+            "event": {
+                "id": event.id,
+                "name": event.name,
+                "category": event.category,
+                "date": event.date.isoformat().replace("+00:00", "Z"),
+                "imageUrl": event.image_url,
+                "location": {"province": event.province, "details": event.location_details},
+            },
             "priceId": self.price_id,
             "price": {**self.price.to_api(), "amount": float(self.amount)},
             "amount": float(self.amount),
