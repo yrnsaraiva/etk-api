@@ -19,6 +19,7 @@ from payments.services import start_payment
 
 from .services import check_in, confirm_payment, create_ticket
 from .webhooks import notify_partner
+from django.utils.dateparse import parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,33 @@ class TicketCreateSerializer(serializers.Serializer):
 
 
 class ExternalTicketCreateView(APIView):
-    """POST /back/borrow/external/tickets"""
+    """
+    POST /back/borrow/external/tickets — cria um ticket
+    GET  /back/borrow/external/tickets — lista os tickets do parceiro
+    """
 
     authentication_classes = EXTERNAL_AUTH
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tickets = Ticket.objects.filter(issued_to=request.user).select_related("price__event")
+
+        event_id = request.query_params.get("eventId")
+        if event_id:
+            tickets = tickets.filter(price__event_id=event_id)
+
+        payment = request.query_params.get("payment")
+        if payment:
+            tickets = tickets.filter(payment=payment)
+
+        since = request.query_params.get("since")
+        if since:
+            parsed = parse_datetime(since)
+            if parsed:
+                tickets = tickets.filter(updated_at__gte=parsed)
+
+        tickets = tickets.order_by("-created_at")[:500]
+        return ok([t.to_api() for t in tickets], "Tickets retrieved successfully")
 
     def post(self, request):
         serializer = TicketCreateSerializer(data=request.data)
