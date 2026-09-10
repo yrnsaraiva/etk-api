@@ -116,7 +116,34 @@ DEBITOPAY = {
     "DEFAULT_METHOD": os.getenv("DEBITOPAY_DEFAULT_METHOD", "mpesa"),
     "TIMEOUT": 30,
 }
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8901")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://etk-api.up.railway.app")
 
 DEFAULT_CURRENCY = "MZN"
 TICKET_RESERVATION_MINUTES = 15
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        # o teu logger de app, se usares __name__ nos módulos (services.py, etc.)
+        "": {
+            "handlers": ["console"],
+            "level": "INFO",
+        },
+    },
+}

@@ -88,43 +88,41 @@ class ExternalTicketCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        ticket = create_ticket(
-            price_id=data["priceId"],
-            event_id=data["eventId"],
-            phone=data["phone"],
-            issued_to=request.user,
-            full_name=data.get("fullName", ""),
-            email=data.get("email", ""),
-            payment_method=data.get("paymentMethod", ""),
-        )
-        # Inicia a cobrança no gateway. O bilhete nasce `pending`; o webhook
-        # (ou a reconciliação) confirma.
         try:
-            charge = start_payment(
-                ticket,
-                callback_url=f"{settings.PUBLIC_BASE_URL}/back/payments/webhooks/debitopay",
+            ticket = create_ticket(
+                price_id=data["priceId"],
+                event_id=data["eventId"],
+                phone=data["phone"],
+                issued_to=request.user,
+                full_name=data.get("fullName", ""),
+                email=data.get("email", ""),
+                payment_method=data.get("paymentMethod", ""),
             )
-        except PaymentDeclined as exc:
-            # Recusa de negócio (ex.: saldo insuficiente), não falha do
-            # sistema — nível de log mais baixo para não poluir os alertas
-            # com algo que vai acontecer sempre que um cliente tenta pagar
-            # sem saldo. A vaga fica reservada até expirar, tal como no
-            # timeout: o cliente pode tentar de novo com outro saldo/método.
-            logger.info("cobrança recusada para %s: %s", ticket.id, exc)
+
+            try:
+                charge = start_payment(
+                    ticket,
+                    callback_url=f"{settings.PUBLIC_BASE_URL}/back/payments/webhooks/debitopay",
+                )
+            except PaymentDeclined as exc:
+                logger.info("cobrança recusada para %s: %s", ticket.id, exc)
+                return fail(
+                    str(exc) or "Pagamento recusado. Verifique o saldo ou tente outro método.",
+                    status.HTTP_402_PAYMENT_REQUIRED,
+                    data={"ticketId": ticket.id},
+                )
+            except PaymentError as exc:
+                logger.error("falha ao iniciar cobrança de %s: %s", ticket.id, exc)
+                return fail(
+                    "Não foi possível iniciar o pagamento. Tente novamente.",
+                    status.HTTP_502_BAD_GATEWAY,
+                    data={"ticketId": ticket.id},
+                )
+        except Exception:
+            logger.exception("erro inesperado ao criar ticket/iniciar pagamento")
             return fail(
-                str(exc) or "Pagamento recusado. Verifique o saldo ou tente outro método.",
-                status.HTTP_402_PAYMENT_REQUIRED,
-                data={"ticketId": ticket.id},
-            )
-        except PaymentError as exc:
-            # Falha de comunicação (timeout, DNS, resposta ilegível) — a vaga
-            # fica reservada até expirar: o cliente pode tentar de novo sem
-            # perder o lugar, e o expirador limpa se desistir.
-            logger.error("falha ao iniciar cobrança de %s: %s", ticket.id, exc)
-            return fail(
-                "Não foi possível iniciar o pagamento. Tente novamente.",
-                status.HTTP_502_BAD_GATEWAY,
-                data={"ticketId": ticket.id},
+                "Erro interno ao processar o pedido.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         ticket.refresh_from_db()
