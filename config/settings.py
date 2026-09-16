@@ -114,7 +114,7 @@ DEBITOPAY = {
         "payfast": os.getenv("DEBITOPAY_WALLET_PAYFAST", ""),
     },
     "DEFAULT_METHOD": os.getenv("DEBITOPAY_DEFAULT_METHOD", "mpesa"),
-    "TIMEOUT": 30,
+    "TIMEOUT": 90,
 }
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://etk-api.up.railway.app")
 

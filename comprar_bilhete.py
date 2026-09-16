@@ -30,7 +30,7 @@ PRICE_ID = "PRC17876714442303"
 PHONE = "258849651834"
 PAYMENT_METHOD = "mpesa"           # mpesa | emola | mkesh | card
 POLL_SECONDS = 3
-POLL_TIMEOUT = 60
+POLL_TIMEOUT = 90
 # ---------------------------------------------------------------------
 
 session = requests.Session()

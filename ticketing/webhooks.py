@@ -72,7 +72,7 @@ def notify_partner(
                 owner.webhook_url,
                 data=body,
                 headers=headers,
-                timeout=(3, 10),
+                timeout=(3, 30),
             )
 
             if 200 <= response.status_code < 300:

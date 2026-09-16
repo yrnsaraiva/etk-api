@@ -85,7 +85,7 @@ class DebitoPayProvider(PaymentProvider):
         self.merchant_id = cfg["MERCHANT_ID"]
         self.wallets = cfg["WALLETS"]
         self.default_method = cfg.get("DEFAULT_METHOD", "mpesa")
-        self.timeout = cfg.get("TIMEOUT", 30)
+        self.timeout = cfg.get("TIMEOUT", 90)
         self.signature_header = cfg.get("SIGNATURE_HEADER", "X-Webhook-Signature")
 
     # ------------------------------------------------------------------ HTTP
