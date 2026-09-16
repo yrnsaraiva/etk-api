@@ -14,7 +14,7 @@ moldam o resto deste ficheiro:
    `settings.DEBITOPAY["WALLETS"]`.
 
 O `payment_id` devolvido pelo gateway é o que usamos como `Charge.reference`
-— é ele que aparece depois no webhook e no `check-status`.
+— é ele que aparece depois no webhook e no `check-status`
 """
 
 import hashlib
