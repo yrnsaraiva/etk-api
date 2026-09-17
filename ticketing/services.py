@@ -19,14 +19,30 @@ class TicketError(ValidationError):
     pass
 
 
+# Estados em que um ticket antigo com o mesmo external_reference ainda
+# "conta" como o mesmo pedido em curso. FAILED/REFUNDED já libertaram a vaga
+# e não bloqueiam um pedido novo.
+_ALIVE_FOR_DEDUPE = (Ticket.Payment.PENDING, Ticket.Payment.PAID)
+
+
 @transaction.atomic
 def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
-                  full_name: str = "", email: str = "", payment_method: str = "") -> Ticket:
+                  full_name: str = "", email: str = "", payment_method: str = "",
+                  external_reference: str = "") -> Ticket:
     """Emite um bilhete `pending` e reserva o lugar.
 
     `select_for_update()` tranca a linha do Price até ao fim da transação. Sem
     isto, dois pedidos simultâneos leem "resta 1", ambos passam na verificação
-    e vendem-se dois bilhetes para uma vaga.
+    e vendem-se dois bilhetes para uma vaga. Essa mesma trava serializa também
+    a verificação de `external_reference` abaixo: dois pedidos concorrentes
+    para o mesmo price_id com a mesma external_reference não passam ambos —
+    o segundo só continua depois do primeiro ter commitado, e nessa altura já
+    encontra o ticket do primeiro.
+
+    Se `external_reference` vier preenchida e já existir um ticket vivo
+    (pending ou paid) com essa referência para este parceiro, devolve esse
+    ticket em vez de criar outro — é o que evita duplicados quando o parceiro
+    repete o POST (timeout do lado dele, duplo clique, etc.).
     """
     try:
         price = (
@@ -41,6 +57,15 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
         # Não revela que o evento existe noutro organizador — a mesma
         # mensagem de "não pertence" cobre os dois casos.
         raise TicketError("O priceId não pertence a este eventId.")
+
+    if external_reference:
+        existing = Ticket.objects.filter(
+            issued_to=issued_to, external_reference=external_reference,
+            payment__in=_ALIVE_FOR_DEDUPE,
+        ).first()
+        if existing:
+            return existing
+
     if price.event.status != Event.Status.PUBLISHED:
         raise TicketError("Este evento não está disponível.")
     if not price.is_on_sale():
@@ -61,6 +86,7 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
         full_name=full_name,
         email=email,
         payment_method=payment_method,
+        external_reference=external_reference,
         expires_at=timezone.now() + timedelta(minutes=settings.TICKET_RESERVATION_MINUTES),
     )
 

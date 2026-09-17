@@ -14,7 +14,7 @@ from config.envelope import fail, ok
 from partners.authentication import ApiKeyAuthentication
 
 from .models import Ticket
-from payments.providers.base import PaymentDeclined, PaymentError
+from payments.exceptions import PaymentDeclined, PaymentError
 from payments.services import start_payment
 
 from .services import check_in, confirm_payment, create_ticket
@@ -76,6 +76,10 @@ class TicketCreateSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False, allow_blank=True)
     fullName = serializers.CharField(required=False, allow_blank=True, max_length=200)
     paymentMethod = serializers.CharField(required=False, allow_blank=True, max_length=40)
+    # Opcional: quem já integrou continua a funcionar sem mandar isto. Quem
+    # mandar ganha proteção contra duplicados em caso de retry/duplo-clique —
+    # ver ticketing/services.py:create_ticket.
+    externalReference = serializers.CharField(required=False, allow_blank=True, max_length=100)
 
 
 class ExternalTicketCreateView(APIView):
@@ -121,7 +125,20 @@ class ExternalTicketCreateView(APIView):
                 full_name=data.get("fullName", ""),
                 email=data.get("email", ""),
                 payment_method=data.get("paymentMethod", ""),
+                external_reference=data.get("externalReference", ""),
             )
+
+            # Ticket já existia (mesmo externalReference) e já tem pagamento
+            # em curso ou concluído — não iniciar outra cobrança em cima dele.
+            if ticket.provider_charge_id or ticket.payment == Ticket.Payment.PAID:
+                ticket.refresh_from_db()
+                payload = ticket.to_api()
+                payload["paymentInstructions"] = (
+                    "Pagamento já confirmado." if ticket.payment == Ticket.Payment.PAID
+                    else "Cobrança já iniciada para este pedido."
+                )
+                return ok(payload, "Ticket já existente para este externalReference",
+                          status.HTTP_200_OK)
 
             try:
                 charge = start_payment(

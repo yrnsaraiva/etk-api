@@ -39,6 +39,13 @@ class Ticket(models.Model):
         help_text="ex.: Patrocinador Coca-Cola",
     )
 
+    # Id do pedido do lado do parceiro (opcional). Serve só para dedupe: se o
+    # mesmo POST /tickets chegar duas vezes com o mesmo external_reference
+    # (retry, duplo-clique), devolvemos o ticket já existente em vez de criar
+    # outro e reservar outra vaga. Ver ticketing/services.py:create_ticket.
+    # Vazio ("") não conta como duplicado — só é único quando preenchido.
+    external_reference = models.CharField(max_length=100, blank=True, default="")
+
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VALID)
     payment = models.CharField(max_length=20, choices=Payment.choices, default=Payment.PENDING)
     payment_method = models.CharField(max_length=40, blank=True)
@@ -58,6 +65,21 @@ class Ticket(models.Model):
         indexes = [
             models.Index(fields=["payment", "expires_at"]),
             models.Index(fields=["phone"]),
+            models.Index(fields=["issued_to", "external_reference"]),
+        ]
+        constraints = [
+            # Rede de segurança contra corrida entre pedidos concorrentes com
+            # o mesmo external_reference. A serialização "normal" já acontece
+            # via select_for_update() no Price em create_ticket(); isto só
+            # entra em jogo se dois pedidos concorrentes usarem o mesmo
+            # external_reference para price_ids diferentes — nesse caso é um
+            # erro do lado do parceiro, e o segundo pedido falha com 500 em
+            # vez de silenciosamente criar dois tickets.
+            models.UniqueConstraint(
+                fields=["issued_to", "external_reference"],
+                condition=~models.Q(external_reference=""),
+                name="uniq_ticket_partner_external_reference",
+            ),
         ]
 
     def save(self, *args, **kwargs):
@@ -96,6 +118,7 @@ class Ticket(models.Model):
             "fullName": self.full_name,
             "email": self.email,
             "note": self.note,
+            "externalReference": self.external_reference,
             "isInvite": self.payment == self.Payment.INVITED,
             "status": self.status,
             "payment": self.payment,

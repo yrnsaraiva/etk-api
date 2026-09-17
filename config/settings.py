@@ -90,11 +90,6 @@ REST_FRAMEWORK = {
 }
 SIMPLE_JWT = {"ACCESS_TOKEN_LIFETIME": timedelta(minutes=60)}
 
-PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "debitopay")
-PAYMENT_PROVIDERS = {
-    "debitopay": "payments.providers.debitopay.DebitoPayProvider",
-    "fake": "payments.providers.fake.FakeProvider",
-}
 DEBITOPAY = {
     "BASE_URL": os.getenv(
         "DEBITOPAY_BASE_URL",

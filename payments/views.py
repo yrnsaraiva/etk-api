@@ -6,7 +6,7 @@ from rest_framework.permissions import AllowAny
 
 from config.envelope import fail, ok
 
-from .providers.base import InvalidSignature
+from .exceptions import InvalidSignature
 from .services import handle_webhook
 
 logger = logging.getLogger(__name__)
