@@ -180,8 +180,16 @@ certo. Em qualquer plataforma, o essencial é o mesmo:
 
 ```
 release: python manage.py migrate --noinput
-web: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --log-file - --workers 2 --threads 4 --timeout 60 --worker-class gthread
+web: python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --log-file - --workers 2 --threads 4 --timeout 60 --worker-class gthread
 ```
+
+A migração está duplicada de propósito: a linha `release:` é a forma
+correta (corre uma vez, antes do deploy trocar de versão), mas a Railway
+nem sempre a executa — depende de ter a fase de pré-deploy configurada no
+painel do serviço. Repetir `migrate` no `web` garante que corre sempre,
+mesmo que a plataforma ignore o `release:`. `migrate` é idempotente
+(não faz nada se já estiver tudo aplicado), por isso correr duas vezes não
+tem custo.
 
 Variáveis a definir no painel (todas as do `.env`, mais):
 
