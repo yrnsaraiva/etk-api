@@ -114,6 +114,26 @@ DEBITOPAY = {
     "DEFAULT_METHOD": os.getenv("DEBITOPAY_DEFAULT_METHOD", "mpesa"),
     "TIMEOUT": 90,
 }
+# Usada quando o ticket foi criado com uma chave etk_test_… (Fase 4.2): sem
+# isto, uma chave "test" tinha os mesmos poderes que uma "live" e cobrava de
+# verdade. Por omissão herda BASE_URL/SIGNATURE_HEADER/TIMEOUT da conta live
+# (a Debito Pay parece partilhar o mesmo endpoint), só as credenciais mudam.
+DEBITOPAY_SANDBOX = {
+    "BASE_URL": os.getenv("DEBITOPAY_SANDBOX_BASE_URL", DEBITOPAY["BASE_URL"]),
+    "SECRET_KEY": os.getenv("DEBITOPAY_SANDBOX_SECRET_KEY", ""),   # sk_sandbox_…
+    "WEBHOOK_SECRET": os.getenv("DEBITOPAY_SANDBOX_WEBHOOK_SECRET", ""),
+    "SIGNATURE_HEADER": DEBITOPAY["SIGNATURE_HEADER"],
+    "MERCHANT_ID": os.getenv("DEBITOPAY_SANDBOX_MERCHANT_ID", ""),
+    "WALLETS": {
+        "mpesa": os.getenv("DEBITOPAY_SANDBOX_WALLET_MPESA", ""),
+        "emola": os.getenv("DEBITOPAY_SANDBOX_WALLET_EMOLA", ""),
+        "mkesh": os.getenv("DEBITOPAY_SANDBOX_WALLET_MKESH", ""),
+        "visa_mastercard": os.getenv("DEBITOPAY_SANDBOX_WALLET_CARD", ""),
+        "payfast": os.getenv("DEBITOPAY_SANDBOX_WALLET_PAYFAST", ""),
+    },
+    "DEFAULT_METHOD": os.getenv("DEBITOPAY_SANDBOX_DEFAULT_METHOD", DEBITOPAY["DEFAULT_METHOD"]),
+    "TIMEOUT": DEBITOPAY["TIMEOUT"],
+}
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://etk-api.up.railway.app")
 
 DEFAULT_CURRENCY = "MZN"

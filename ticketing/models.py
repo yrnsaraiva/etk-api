@@ -56,6 +56,9 @@ class Ticket(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VALID)
     payment = models.CharField(max_length=20, choices=Payment.choices, default=Payment.PENDING)
     payment_method = models.CharField(max_length=40, blank=True)
+    # True quando a ApiKey que criou o bilhete é "test": a cobrança usa a
+    # sandbox da Debito Pay (settings.DEBITOPAY_SANDBOX), nunca a conta live.
+    test_mode = models.BooleanField(default=False)
     provider = models.CharField(max_length=40, blank=True)
     provider_charge_id = models.CharField(max_length=128, blank=True, db_index=True)
     checkout_url = models.URLField(blank=True)

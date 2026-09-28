@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from catalog.models import Event
 from config.envelope import fail, ok
 from partners.authentication import ApiKeyAuthentication
+from partners.models import ApiKey
 
 from .models import Ticket
 from payments.exceptions import PaymentDeclined, PaymentError
@@ -122,6 +123,7 @@ class ExternalTicketCreateView(APIView):
                 email=data.get("email", ""),
                 payment_method=data.get("paymentMethod", ""),
                 external_reference=data.get("externalReference", ""),
+                test_mode=(getattr(request.auth, "environment", None) == ApiKey.Environment.TEST),
             )
 
             # Ticket já existia (mesmo externalReference) e já tem pagamento

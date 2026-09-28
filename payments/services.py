@@ -48,6 +48,7 @@ def start_payment(ticket: Ticket, *, callback_url: str) -> Charge:
             method=ticket.payment_method,
             description=f"{ticket.event.name} — {ticket.price.name}",
             callback_url=callback_url,
+            sandbox=ticket.test_mode,
         )
     except PaymentError as exc:
         # Cobre tanto recusa (PaymentDeclined) como falha de transporte
@@ -186,7 +187,7 @@ def reconcile_pending(limit: int = 200) -> dict:
     for ticket in pending:
         stats["verificados"] += 1
         try:
-            charge = debitopay.fetch_charge(ticket.provider_charge_id)
+            charge = debitopay.fetch_charge(ticket.provider_charge_id, sandbox=ticket.test_mode)
         except PaymentError as exc:
             logger.warning("reconciliação falhou para %s: %s", ticket.id, exc)
             stats["erros"] += 1
