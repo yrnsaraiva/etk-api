@@ -38,116 +38,109 @@ assuma que o token e o hash foram vistos — a revogação é o que conta.
 cd etk-api
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+export DEBUG=1                                    # HTTP local, cai em SQLite
+export DJANGO_SECRET_KEY=$(python -c "from django.core.management.utils import get_random_secret_key as g; print(g())")
+export QR_SIGNING_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+
 python manage.py migrate
-python manage.py shell < seed.py
+python manage.py seed_demo
+python manage.py runserver 8901
 ```
 
-O `seed.py` imprime duas linhas. **Guarde-as** — a chave não volta a aparecer:
-
-```
-EVENT_ID=EVNT17874803908179
-API_KEY=etk_live_…
-```
-
-Arranque com o gateway falso, para não precisar de credenciais ainda:
-
-```bash
-PAYMENT_PROVIDER=fake python manage.py runserver 8901
-```
+O `seed_demo` imprime o `EVENT_ID` e a `API_KEY`. **Guarde-os** — a chave
+não volta a aparecer. Sem credenciais da Debito Pay ainda (passo 5), a
+criação de bilhete falha ao tentar cobrar — o resto da API (listar
+eventos, emitir convites, check-in) já funciona.
 
 ---
 
-## Passo 2 — Provar que o cliente é compatível
+## Passo 2 — Provar que a proteção contra overselling funciona
 
-Noutro terminal, com os valores do passo anterior:
-
-```bash
-python client_compat_test.py etk_live_… EVNT178748039...
-```
-
-Devem sair 12 linhas e terminar em `CLIENTE runwithbroto COMPATIVEL`. Este
-script corre as funções `_etk_request`, `_get_events_from_api`,
-`_get_event_from_api`, `_create_ticket_in_api` e `_build_event_context`
-copiadas do seu repositório sem alterações.
-
-Se falhar aqui, pare e resolva — os passos seguintes assumem esta base.
-
-Depois, o fluxo de pagamento:
+Isto exige PostgreSQL (passo 4) — em SQLite o `select_for_update()` não
+tranca nada, então corra este passo depois desse.
 
 ```bash
-PAYMENT_PROVIDER=fake python manage.py shell < payments_test.py
+python manage.py test_concurrency --vagas 3 --compradores 10
 ```
 
-Dez verificações, incluindo webhook duplicado, assinatura falsa e valor
-adulterado. Deve terminar em `TUDO OK`.
+Lança 10 "compradores" simultâneos sobre 3 vagas e falha
+(`CommandError`) se saírem mais de 3 bilhetes. Deve terminar em
+`OK — exatamente 3 bilhetes, nem mais nem menos.`
+
+Depois, a suite automática:
+
+```bash
+python manage.py test
+```
+
+66+ testes, incluindo o fluxo de pagamento com mocks (`payments/tests.py`,
+`payments/tests_debitopay.py` — nenhum toca na rede).
 
 ---
 
 ## Passo 3 — Segredos em variáveis de ambiente
 
-```bash
-cp .env .env
-python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
-```
-
-Cole o resultado em `DJANGO_SECRET_KEY`. O `.env` já está no `.gitignore` —
-confirme antes do primeiro commit:
+`DJANGO_SECRET_KEY` e `QR_SIGNING_KEY` já foram geradas no passo 1 — para
+produção, gere-as de novo (não reaproveite as de desenvolvimento) e guarde
+num `.env` ou no painel da plataforma de deploy, nunca no código. O
+`.gitignore` já cobre `.env`; confirme antes do primeiro commit:
 
 ```bash
 git status --short | grep -c "\.env$"   # tem de dar 0
+```
+
+O hook em `scripts/pre-commit` bloqueia commits com segredos óbvios (chaves
+`etk_live_…`/`sk_live_…`, uma `SECRET_KEY` gerada automaticamente pelo
+Django, chaves privadas). Ative-o:
+
+```bash
+git config core.hooksPath scripts
 ```
 
 ---
 
 ## Passo 4 — PostgreSQL
 
-**Não é opcional.** A proteção contra vender bilhetes a mais assenta em
-`select_for_update()`, que no SQLite não tranca nada de útil. Com SQLite em
-produção, dois pagamentos simultâneos do último bilhete passam ambos.
+**Não é opcional em produção.** A proteção contra vender bilhetes a mais
+assenta em `select_for_update()`, que no SQLite não tranca nada de útil.
+Com SQLite, dois pagamentos simultâneos do último bilhete passam ambos —
+é exatamente o que o passo 2 prova.
 
 ```bash
 docker run -d --name etk-db -e POSTGRES_PASSWORD=dev \
   -e POSTGRES_DB=etk -p 5432:5432 postgres:16
 
 export DATABASE_URL=postgresql://postgres:dev@localhost:5432/etk
+unset DEBUG          # com DATABASE_URL definida, já não precisa do fallback SQLite
 python manage.py migrate
-python manage.py shell < seed.py
+python manage.py seed_demo --reset
 ```
-
-O `settings.py` usa `DATABASE_URL` quando existe e cai no SQLite quando não.
 
 Repita o passo 2 contra o Postgres antes de seguir.
 
 ---
 
-## Passo 5 — Credenciais Debito Pay e os seis pontos do contrato
+## Passo 5 — Credenciais Debito Pay
 
-Crie a conta, entre no dashboard e obtenha as chaves de **sandbox** (não as de
-produção ainda). Depois abra `payments/providers/debitopay.py` e confirme os
-seis pontos marcados `CONTRATO-1` a `CONTRATO-6`:
-
-| # | O que confirmar | Onde corrigir |
-|---|---|---|
-| 1 | URL base e caminho da cobrança (assumi `POST /v1/charges`) | `create_charge` |
-| 2 | Cabeçalho de autenticação — `Bearer`? `X-API-Key`? | `_headers` |
-| 3 | Nomes dos campos e **se `amount` vai em unidades ou cêntimos** | `create_charge` |
-| 4 | Nomes na resposta e valores de estado | `STATUS_MAP`, `_to_charge` |
-| 5 | Cabeçalho e codificação da assinatura (hex ou base64) | `_signature_ok` |
-| 6 | Se a assinatura cobre o corpo cru ou o JSON re-serializado | `_signature_ok` |
-
-O ponto 3 é o que dá cobranças 100× erradas. O ponto 6 é o que faz toda a
-validação falhar por causa de espaços em branco: se eles assinam o corpo cru e
-você validar sobre `json.dumps(request.data)`, nunca bate certo. O código já
-valida sobre `request.body` (cru) e aceita hex e base64 até confirmar.
+Crie a conta, entre no dashboard e obtenha as chaves de **sandbox** (não as
+de produção ainda). `payments/debitopay.py` documenta no topo o contrato
+assumido — endpoint único, ação `process`/`check-status`, assinatura
+HMAC-SHA256 sobre o corpo cru — e avisa que foi copiado de código anterior.
+Confirme contra a documentação oficial antes de ir para produção.
 
 Preencha no `.env`:
 
 ```
-PAYMENT_PROVIDER=debitopay
 DEBITOPAY_BASE_URL=https://...
-DEBITOPAY_SECRET_KEY=...
+DEBITOPAY_SECRET_KEY=sk_sandbox_...
 DEBITOPAY_WEBHOOK_SECRET=...
+DEBITOPAY_MERCHANT_ID=...
+DEBITOPAY_WALLET_MPESA=...              # e as outras carteiras que for usar
 ```
+
+Ver `docs/pagamentos.md` para a lista completa de variáveis e a arquitetura
+do adaptador.
 
 ---
 
@@ -166,7 +159,9 @@ Registe no dashboard Debito Pay o webhook:
 Faça uma compra real de sandbox e confirme três coisas nos logs:
 
 1. A cobrança foi criada (o bilhete tem `provider_charge_id`).
-2. O webhook chegou **e passou na assinatura** — se der 401, é o ponto 5 ou 6.
+2. O webhook chegou **e passou na assinatura** — um 401 aqui é quase
+   sempre `DEBITOPAY_WEBHOOK_SECRET` errada, ou a Debito Pay a assinar
+   algo diferente do que `_signature_ok` espera (ver `docs/pagamentos.md`).
 3. O bilhete passou a `paid`.
 
 Se o webhook não chegar, force a reconciliação para confirmar que o outro
@@ -292,7 +287,10 @@ if data["data"]["payment"] != "paid":
 ```
 
 Melhor ainda: registe o webhook do parceiro (campo `webhook_url` no seu
-utilizador organizador) e deixe a API avisar quando cada bilhete é pago.
+utilizador organizador) e deixe a API avisar quando cada bilhete é pago ou
+reembolsado. O aviso é entregue por um cron a correr a cada minuto (ver
+Passo 8), por isso não chega no mesmo instante da confirmação — se o
+scanner precisar de saber logo, continue a sondar `GET /tickets/{id}`.
 
 ---
 
