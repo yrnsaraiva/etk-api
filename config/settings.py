@@ -50,10 +50,14 @@ TEMPLATES = [{
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DEBUG:
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL não configurada em produção")
+if not DEBUG and not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL não configurada em produção")
 
+if DATABASE_URL:
+    # Usa Postgres sempre que DATABASE_URL existir, mesmo com DEBUG=1 — é o
+    # que permite correr os testes (incluindo test_concurrency, que só prova
+    # alguma coisa em Postgres) sem também ligar o redirecionamento HTTPS
+    # forçado, que quebra o test client (só fala HTTP simples).
     DATABASES = {
         "default": dj_database_url.parse(
             DATABASE_URL,

@@ -28,7 +28,11 @@ jobs:
       DJANGO_SECRET_KEY: ci-secret-key-not-for-production
       QR_SIGNING_KEY: ci-qr-signing-key-not-for-production
       DATABASE_URL: postgres://etk:etk@localhost:5432/etk_ci
-      DEBUG: "0"
+      # DEBUG=1 aqui não cai em SQLite — DATABASE_URL manda nisso. Só
+      # desliga o redirecionamento HTTPS forçado, que quebra o test client
+      # (fala HTTP simples); com DEBUG=0 os testes recebiam 301 em vez do
+      # código esperado.
+      DEBUG: "1"
       ALLOWED_HOSTS: localhost
 
     steps:
