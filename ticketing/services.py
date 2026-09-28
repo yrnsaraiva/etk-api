@@ -12,6 +12,7 @@ from rest_framework.exceptions import ValidationError
 from catalog.models import Event, Price, make_id
 
 from .models import CheckInLog, PaymentAttempt, Ticket, _qr_signature
+from .webhooks import notify_partner
 
 
 class TicketError(ValidationError):
@@ -112,6 +113,7 @@ def confirm_payment(ticket: Ticket, *, provider: str, provider_reference: str,
     ticket.paid_at = timezone.now()
     ticket.expires_at = None
     ticket.save(update_fields=["payment", "paid_at", "expires_at", "updated_at"])
+    notify_partner(ticket)
     return ticket
 
 
@@ -150,6 +152,7 @@ def reclaim_and_confirm(ticket: Ticket, *, provider: str, provider_reference: st
         ticket.paid_at = timezone.now()
         ticket.expires_at = None
         ticket.save(update_fields=["payment", "status", "paid_at", "expires_at", "updated_at"])
+        notify_partner(ticket)
     else:
         ticket.payment = Ticket.Payment.REVIEW
         ticket.save(update_fields=["payment", "updated_at"])
@@ -200,6 +203,7 @@ def refund(ticket: Ticket) -> Ticket:
         Price.objects.filter(pk=ticket.price_id, status=Price.Status.SOLD_OUT).update(
             status=Price.Status.ACTIVE
         )
+    notify_partner(ticket, event_name="ticket.refunded")
     return ticket
 
 

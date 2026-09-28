@@ -22,7 +22,6 @@ from django.utils import timezone
 
 from ticketing.models import PaymentAttempt, Ticket
 from ticketing.services import confirm_payment, reclaim_and_confirm, refund, release
-from ticketing.webhooks import notify_partner
 
 from . import debitopay
 from .debitopay import FAILED, PENDING, REFUNDED, SUCCEEDED, PROVIDER_NAME, Charge
@@ -147,7 +146,8 @@ def _settle(ticket: Ticket, *, status: str, amount, currency: str | None,
                 logger.error("pagamento tardio sem vaga para o bilhete %s", ticket.id)
                 return "Pagamento tardio, sem vaga — retido para revisão manual."
 
-        notify_partner(ticket)
+        # confirm_payment/reclaim_and_confirm já enfileiram o aviso ao
+        # parceiro (notify_partner), dentro da mesma transação.
         return "Pagamento confirmado."
 
     if status == FAILED:
@@ -155,9 +155,7 @@ def _settle(ticket: Ticket, *, status: str, amount, currency: str | None,
         return "Pagamento falhou — vaga libertada."
 
     if status == REFUNDED:
-        ticket = refund(ticket)
-        if ticket.payment == Ticket.Payment.REFUNDED:
-            notify_partner(ticket, event_name="ticket.refunded")
+        refund(ticket)   # já enfileira ticket.refunded, se aplicável
         return "Pagamento reembolsado — bilhete anulado."
 
     return "Estado pendente — sem alteração."

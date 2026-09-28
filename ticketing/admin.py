@@ -1,8 +1,7 @@
 from django.contrib import admin
 
-from .models import CheckInLog, PaymentAttempt, Ticket
+from .models import CheckInLog, PartnerDelivery, PaymentAttempt, Ticket
 from .services import reclaim_and_confirm, refund
-from .webhooks import notify_partner
 
 
 @admin.register(Ticket)
@@ -24,7 +23,6 @@ class TicketAdmin(admin.ModelAdmin):
                 ticket, provider="admin", provider_reference=f"manual:{request.user}",
             )
             if ticket.payment == Ticket.Payment.PAID:
-                notify_partner(ticket)
                 confirmados += 1
             else:
                 sem_vaga += 1
@@ -43,7 +41,6 @@ class TicketAdmin(admin.ModelAdmin):
                 continue
             ticket = refund(ticket)
             if ticket.payment == Ticket.Payment.REFUNDED:
-                notify_partner(ticket, event_name="ticket.refunded")
                 reembolsados += 1
             else:
                 ignorados += 1
@@ -63,3 +60,12 @@ class PaymentAttemptAdmin(admin.ModelAdmin):
 class CheckInLogAdmin(admin.ModelAdmin):
     list_display = ("ticket_id_raw", "result", "scanned_by", "scanned_at")
     list_filter = ("result",)
+
+
+@admin.register(PartnerDelivery)
+class PartnerDeliveryAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "event", "attempts", "next_attempt_at",
+                    "delivered_at", "gave_up_at")
+    list_filter = ("event", "delivered_at", "gave_up_at")
+    search_fields = ("ticket__id",)
+    readonly_fields = ("ticket", "event", "payload", "created_at")

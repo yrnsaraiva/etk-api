@@ -1,137 +1,122 @@
-"""Notificação ao parceiro quando o pagamento é confirmado.
+"""Enfileira o aviso ao parceiro quando o pagamento é confirmado ou
+reembolsado.
 
-Sem isto, o site do parceiro guarda `payment: pending` no momento da criação e
-nunca mais sabe que o bilhete foi pago — foi exatamente o que aconteceu no
+Sem isto, o site do parceiro guarda `payment: pending` no momento da criação
+e nunca mais sabe que o bilhete foi pago — foi exatamente o que aconteceu no
 runwithbroto, onde o scanner compara com um valor local desatualizado.
+
+`notify_partner()` só cria a linha em `PartnerDelivery`, dentro da mesma
+transação que muda o estado do bilhete — nunca faz o pedido HTTP aqui. Um
+parceiro lento não pode prender um worker do webhook da Debito Pay à espera
+da resposta, e um aviso nunca se perde só porque o parceiro estava em baixo
+no momento exato da confirmação. A entrega de facto corre à parte, no
+comando `deliver_webhooks` (cron, a cada minuto).
 """
 
 import hashlib
 import hmac
 import json
 import logging
-import time
+from datetime import timedelta
 
 import requests
+from django.utils import timezone
+
+from .models import PartnerDelivery
 
 logger = logging.getLogger(__name__)
 
+# Espera crescente entre tentativas (minutos); mantém-se em 60 depois da
+# última. Desiste de vez ao fim de GIVE_UP_AFTER, sem voltar a tentar.
+BACKOFF_MINUTES = [1, 5, 15, 60]
+GIVE_UP_AFTER = timedelta(days=1)
+
 
 def sign(body: bytes, secret: str) -> str:
-    return hmac.new(
-        secret.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def notify_partner(
-    ticket,
-    event_name: str = "ticket.paid",
-    max_retries: int = 3,
-) -> bool:
+def notify_partner(ticket, event_name: str = PartnerDelivery.Event.TICKET_PAID) -> None:
     owner = ticket.issued_to
 
     if not owner.webhook_url:
-        logger.info(
-            "Ticket %s: parceiro não possui webhook configurado.",
-            ticket.id,
-        )
-        return False
+        logger.info("Ticket %s: parceiro não possui webhook configurado.", ticket.id)
+        return
 
-    body = json.dumps(
-        {
-            "event": event_name,
-            "data": ticket.to_api(),
-        },
-        separators=(",", ":"),
-    ).encode()
-
-    signature = sign(
-        body,
-        owner.webhook_secret or "",
+    PartnerDelivery.objects.create(
+        ticket=ticket, event=event_name, payload=ticket.to_api(),
     )
 
+
+def deliver_pending_webhooks() -> dict:
+    """Envia as notificações enfileiradas por `notify_partner`. Correr a
+    cada minuto (cron/`deliver_webhooks`).
+
+    `X-ETK-Delivery-ID` leva o id da própria linha, não o id do bilhete —
+    um bilhete pode gerar mais do que uma entrega (pago, depois reembolsado),
+    e cada uma precisa de um id próprio para o parceiro filtrar repetidos.
+    """
+    now = timezone.now()
+    stats = {"entregues": 0, "falharam": 0, "desistidos": 0}
+
+    pendentes = PartnerDelivery.objects.filter(
+        delivered_at__isnull=True, gave_up_at__isnull=True, next_attempt_at__lte=now,
+    ).select_related("ticket__issued_to")
+
+    for entrega in pendentes:
+        if now - entrega.created_at > GIVE_UP_AFTER:
+            entrega.gave_up_at = now
+            entrega.save(update_fields=["gave_up_at"])
+            logger.error(
+                "desistiu de entregar o aviso #%s (%s) ao bilhete %s após %s",
+                entrega.pk, entrega.event, entrega.ticket_id, GIVE_UP_AFTER,
+            )
+            stats["desistidos"] += 1
+            continue
+
+        if _deliver_one(entrega, now):
+            stats["entregues"] += 1
+        else:
+            stats["falharam"] += 1
+    return stats
+
+
+def _deliver_one(entrega: PartnerDelivery, now) -> bool:
+    owner = entrega.ticket.issued_to
+    body = json.dumps(
+        {"event": entrega.event, "data": entrega.payload}, separators=(",", ":")
+    ).encode()
     headers = {
         "Content-Type": "application/json",
-        "X-ETK-Signature": signature,
-        "X-ETK-Event": event_name,
-        "X-ETK-Delivery-ID": str(ticket.id),
+        "X-ETK-Signature": sign(body, owner.webhook_secret or ""),
+        "X-ETK-Event": entrega.event,
+        "X-ETK-Delivery-ID": str(entrega.pk),
     }
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            logger.info(
-                "Webhook %s para %s — tentativa %s/%s",
-                ticket.id,
-                owner.webhook_url,
-                attempt,
-                max_retries,
-            )
+    erro = ""
+    try:
+        response = requests.post(owner.webhook_url, data=body, headers=headers, timeout=(3, 30))
+        ok = 200 <= response.status_code < 300
+        if not ok:
+            erro = f"HTTP {response.status_code}: {response.text[:200]}"
+    except requests.RequestException as exc:
+        ok = False
+        erro = str(exc)[:255]
 
-            response = requests.post(
-                owner.webhook_url,
-                data=body,
-                headers=headers,
-                timeout=(3, 30),
-            )
+    entrega.attempts += 1
+    if ok:
+        entrega.delivered_at = now
+        entrega.last_error = ""
+        entrega.save(update_fields=["attempts", "delivered_at", "last_error"])
+        logger.info("aviso #%s entregue ao bilhete %s", entrega.pk, entrega.ticket_id)
+        return True
 
-            if 200 <= response.status_code < 300:
-                logger.info(
-                    "Webhook entregue com sucesso. "
-                    "Ticket=%s status=%s",
-                    ticket.id,
-                    response.status_code,
-                )
-                return True
-
-            logger.warning(
-                "Webhook rejeitado. "
-                "Ticket=%s status=%s resposta=%s",
-                ticket.id,
-                response.status_code,
-                response.text[:500],
-            )
-
-            # Erros 4xx normalmente não serão resolvidos
-            # repetindo imediatamente.
-            if 400 <= response.status_code < 500:
-                return False
-
-        except requests.Timeout:
-            logger.warning(
-                "Timeout no webhook. "
-                "Ticket=%s tentativa=%s/%s",
-                ticket.id,
-                attempt,
-                max_retries,
-            )
-
-        except requests.RequestException as exc:
-            logger.warning(
-                "Erro no webhook. "
-                "Ticket=%s tentativa=%s/%s erro=%s",
-                ticket.id,
-                attempt,
-                max_retries,
-                exc,
-            )
-
-        if attempt < max_retries:
-            # 2s, 4s
-            delay = 2 ** attempt
-
-            logger.info(
-                "Nova tentativa do webhook em %s segundos.",
-                delay,
-            )
-
-            time.sleep(delay)
-
-    logger.error(
-        "Webhook falhou definitivamente após %s tentativas. "
-        "Ticket=%s",
-        max_retries,
-        ticket.id,
+    delay = BACKOFF_MINUTES[min(entrega.attempts - 1, len(BACKOFF_MINUTES) - 1)]
+    entrega.next_attempt_at = now + timedelta(minutes=delay)
+    entrega.last_error = erro
+    entrega.save(update_fields=["attempts", "next_attempt_at", "last_error"])
+    logger.warning(
+        "aviso #%s ao bilhete %s falhou (tentativa %s): %s",
+        entrega.pk, entrega.ticket_id, entrega.attempts, erro,
     )
-
     return False

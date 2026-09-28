@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import Mock, patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -7,11 +8,12 @@ from rest_framework.test import APIClient
 
 from catalog.models import Event, Price
 from partners.models import ApiKey, User
-from ticketing.models import Ticket
+from ticketing.models import PartnerDelivery, Ticket
 from ticketing.services import (
     TicketError, check_in, confirm_payment, create_ticket,
     expire_stale_tickets, parse_qr, reclaim_and_confirm, refund, release,
 )
+from ticketing.webhooks import deliver_pending_webhooks
 
 
 class Base(TestCase):
@@ -342,3 +344,94 @@ class ReembolsoTests(Base):
         refund(t)   # segunda chamada não deve devolver a vaga outra vez
         self.price.refresh_from_db()
         self.assertEqual(self.price.available, vagas_depois_do_primeiro)
+
+
+def _resp(status_code=200):
+    m = Mock()
+    m.status_code = status_code
+    m.text = "erro" if status_code >= 400 else "ok"
+    return m
+
+
+class FilaDeAvisosTests(Base):
+    """Fase 2.3: notify_partner só enfileira; deliver_pending_webhooks
+    entrega de facto, com espera crescente e desistência ao fim de 1 dia."""
+
+    def setUp(self):
+        super().setUp()
+        self.org.webhook_url = "https://parceiro.example/webhook"
+        self.org.webhook_secret = "segredo-do-parceiro"
+        self.org.save()
+
+    def test_notify_partner_so_enfileira_nao_faz_pedido_http(self):
+        t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+        self.assertEqual(PartnerDelivery.objects.filter(ticket=t).count(), 1)
+        entrega = PartnerDelivery.objects.get(ticket=t)
+        self.assertEqual(entrega.event, "ticket.paid")
+        self.assertIsNone(entrega.delivered_at)
+
+    def test_sem_webhook_configurado_nao_enfileira(self):
+        self.org.webhook_url = ""
+        self.org.save()
+        confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+        self.assertEqual(PartnerDelivery.objects.count(), 0)
+
+    @patch("ticketing.webhooks.requests.post")
+    def test_entrega_com_sucesso_marca_delivered(self, post):
+        post.return_value = _resp(200)
+        t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+
+        stats = deliver_pending_webhooks()
+        self.assertEqual(stats["entregues"], 1)
+
+        entrega = PartnerDelivery.objects.get(ticket=t)
+        self.assertIsNotNone(entrega.delivered_at)
+        self.assertEqual(entrega.attempts, 1)
+        headers = post.call_args.kwargs["headers"]
+        self.assertEqual(headers["X-ETK-Delivery-ID"], str(entrega.pk))
+        self.assertEqual(headers["X-ETK-Event"], "ticket.paid")
+
+    @patch("ticketing.webhooks.requests.post")
+    def test_falha_agenda_nova_tentativa_com_espera_crescente(self, post):
+        post.return_value = _resp(500)
+        t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+
+        deliver_pending_webhooks()
+        entrega = PartnerDelivery.objects.get(ticket=t)
+        self.assertIsNone(entrega.delivered_at)
+        self.assertEqual(entrega.attempts, 1)
+        primeira_espera = entrega.next_attempt_at - entrega.created_at
+        self.assertTrue(timedelta(minutes=0) < primeira_espera <= timedelta(minutes=1, seconds=5))
+
+        # ainda não é altura da 2ª tentativa: não entrega outra vez já.
+        stats = deliver_pending_webhooks()
+        self.assertEqual(stats["entregues"], 0)
+        self.assertEqual(stats["falharam"], 0)
+        entrega.refresh_from_db()
+        self.assertEqual(entrega.attempts, 1)
+
+    @patch("ticketing.webhooks.requests.post")
+    def test_desiste_ao_fim_de_um_dia(self, post):
+        post.return_value = _resp(500)
+        t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+        PartnerDelivery.objects.filter(ticket=t).update(
+            created_at=timezone.now() - timedelta(days=2)
+        )
+
+        stats = deliver_pending_webhooks()
+        self.assertEqual(stats["desistidos"], 1)
+        post.assert_not_called()   # nem tenta — já passou o prazo
+
+        entrega = PartnerDelivery.objects.get(ticket=t)
+        self.assertIsNotNone(entrega.gave_up_at)
+        self.assertIsNone(entrega.delivered_at)
+
+    @patch("ticketing.webhooks.requests.post")
+    def test_reembolso_gera_uma_entrega_propria_com_id_diferente(self, post):
+        post.return_value = _resp(200)
+        t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+        refund(t)
+
+        entregas = list(PartnerDelivery.objects.filter(ticket=t).order_by("created_at"))
+        self.assertEqual([e.event for e in entregas], ["ticket.paid", "ticket.refunded"])
+        self.assertNotEqual(entregas[0].pk, entregas[1].pk)
