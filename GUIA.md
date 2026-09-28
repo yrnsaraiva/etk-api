@@ -9,7 +9,7 @@ irreversível se for feito à pressa. Não salte o passo 9.
 
 ## Passo 0 — Revogar o token exposto
 
-**Antes de tudo o resto.** O `etk_live_3SZPEA7FNCZAdqjIaBIIbI7j` está no
+**Antes de tudo o resto.** O `etk_live_…` está no
 histórico público do `yrnsaraiva/runwithbroto`, em quatro ficheiros. Apagá-lo do
 código não resolve: quem clonar o repo tira-o do histórico.
 
@@ -46,7 +46,7 @@ O `seed.py` imprime duas linhas. **Guarde-as** — a chave não volta a aparecer
 
 ```
 EVENT_ID=EVNT17874803908179
-API_KEY=etk_live_tbC-qdsqKWhQjhf5ZTbr2ELs
+API_KEY=etk_live_…
 ```
 
 Arranque com o gateway falso, para não precisar de credenciais ainda:
@@ -62,7 +62,7 @@ PAYMENT_PROVIDER=fake python manage.py runserver 8901
 Noutro terminal, com os valores do passo anterior:
 
 ```bash
-python client_compat_test.py etk_live_tbC-qdsq... EVNT178748039...
+python client_compat_test.py etk_live_… EVNT178748039...
 ```
 
 Devem sair 12 linhas e terminar em `CLIENTE runwithbroto COMPATIVEL`. Este
