@@ -185,7 +185,7 @@ certo. Em qualquer plataforma, o essencial é o mesmo:
 
 ```
 release: python manage.py migrate --noinput
-web: gunicorn config.wsgi --bind 0.0.0.0:$PORT --workers 3 --timeout 60
+web: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --log-file - --workers 2 --threads 4 --timeout 60 --worker-class gthread
 ```
 
 Variáveis a definir no painel (todas as do `.env`, mais):
@@ -207,19 +207,22 @@ DEBUG=0 python manage.py check --deploy   # tem de dar 0 issues
 Depois do deploy:
 
 ```bash
-python manage.py collectstatic --noinput   # o admin precisa
 python manage.py createsuperuser
 ```
 
+(o `collectstatic` já corre a cada arranque do `web`, como parte do Procfile
+acima — não é preciso correr à mão.)
+
 ---
 
-## Passo 8 — Os dois cron jobs
+## Passo 8 — Os três cron jobs
 
 Sem estes, o sistema degrada-se silenciosamente.
 
 ```
 */3 * * * * cd /app && python manage.py reconcile_payments
 */2 * * * * cd /app && python manage.py expire_tickets
+*  * * * * cd /app && python manage.py deliver_webhooks
 ```
 
 O `reconcile_payments` apanha quem pagou e cujo webhook se perdeu. Em mobile
@@ -229,7 +232,14 @@ pessoa fica à porta com o dinheiro já fora da conta.
 O `expire_tickets` liberta vagas de reservas não pagas. Sem ele, um evento
 esgota com bilhetes que ninguém comprou.
 
-Em Railway, use um serviço `cron` separado apontando ao mesmo repositório.
+O `deliver_webhooks` entrega à parte os avisos ao parceiro (`ticket.paid`,
+`ticket.refunded`) que `notify_partner` só enfileira. Sem ele, os avisos
+ficam para sempre em `PartnerDelivery` e o site do parceiro nunca sabe que
+um bilhete foi pago ou reembolsado.
+
+Em Railway, use um serviço `cron` separado apontando ao mesmo repositório —
+um serviço por job, cada um com o seu próprio horário e o comando acima
+como *Start Command*.
 
 ---
 
