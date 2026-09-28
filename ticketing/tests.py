@@ -185,6 +185,16 @@ class CheckInTests(Base):
 class ContratoExternoTests(Base):
     """A forma exata que o cliente do parceiro espera."""
 
+    def test_rota_de_callback_inseguro_foi_removida(self):
+        """Fase 0.1: qualquer pessoa marcava um bilhete como pago enviando
+        {"ticketId", "status": "succeeded"} a esta rota, sem assinatura
+        nenhuma. A confirmação só pode vir do webhook assinado ou da
+        reconciliação."""
+        r = self.client.post("/back/payments/callback",
+                             {"ticketId": self.emitir().id, "status": "succeeded"},
+                             format="json")
+        self.assertEqual(r.status_code, 404)
+
     def test_lista_de_eventos_tem_envelope(self):
         r = self.client.get("/back/borrow/external/events")
         self.assertEqual(r.data["status"], "success")
