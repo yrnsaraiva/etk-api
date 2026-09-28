@@ -1,0 +1,50 @@
+name: Testes
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: etk
+          POSTGRES_PASSWORD: etk
+          POSTGRES_DB: etk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U etk"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SECRET_KEY: ci-secret-key-not-for-production
+      QR_SIGNING_KEY: ci-qr-signing-key-not-for-production
+      DATABASE_URL: postgres://etk:etk@localhost:5432/etk_ci
+      DEBUG: "0"
+      ALLOWED_HOSTS: localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python manage.py migrate --noinput
+
+      - run: python manage.py test
+
+      # Só prova o que diz (select_for_update sem venda a mais) em
+      # PostgreSQL — o serviço acima é real, não SQLite.
+      - run: python manage.py test_concurrency --vagas 5 --compradores 25

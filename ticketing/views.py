@@ -5,8 +5,7 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers, status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 from catalog.models import Event
@@ -17,8 +16,7 @@ from .models import Ticket
 from payments.exceptions import PaymentDeclined, PaymentError
 from payments.services import start_payment
 
-from .services import check_in, confirm_payment, create_ticket
-from .webhooks import notify_partner
+from .services import check_in, create_ticket
 from django.utils.dateparse import parse_datetime
 
 logger = logging.getLogger(__name__)
@@ -203,27 +201,3 @@ class ExternalCheckInView(APIView):
         if result == "ok":
             return ok(payload, message)
         return ok(payload, message)  # 200: o porteiro precisa sempre de ler a razão
-
-
-@api_view(["POST"])
-@authentication_classes([])
-@permission_classes([AllowAny])
-def payment_callback(request):
-    """POST /back/payments/callback — chamado pelo gateway de pagamento."""
-    reference = request.data.get("ticketId")
-    try:
-        ticket = Ticket.objects.select_related("price__event", "issued_to").get(pk=reference)
-    except Ticket.DoesNotExist:
-        return fail("Ticket not found", status.HTTP_404_NOT_FOUND)
-
-    if request.data.get("status") != "succeeded":
-        return ok(None, "Ignored")
-
-    ticket = confirm_payment(
-        ticket,
-        provider=request.data.get("provider", "unknown"),
-        provider_reference=request.data.get("providerReference", ""),
-        payload=dict(request.data),
-    )
-    notify_partner(ticket)
-    return ok(ticket.to_api(), "Payment confirmed")

@@ -2,8 +2,14 @@ import hashlib
 import hmac
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from catalog.models import Price, make_id
+
+
+def _qr_signature(ticket_id: str) -> str:
+    sig = hmac.new(settings.QR_SIGNING_KEY.encode(), ticket_id.encode(), hashlib.sha256)
+    return sig.hexdigest()[:16]
 
 
 class Ticket(models.Model):
@@ -18,6 +24,7 @@ class Ticket(models.Model):
         FAILED = "failed", "Falhou"
         REFUNDED = "refunded", "Reembolsado"
         INVITED = "invited", "Convite"
+        REVIEW = "review", "Em revisão"
 
     ENTRY_ALLOWED = {"paid", "invited"}
 
@@ -94,8 +101,7 @@ class Ticket(models.Model):
     @property
     def qr_value(self) -> str:
         """`TCKT…|assinatura` — o porteiro valida sem confiar num ID adivinhável."""
-        sig = hmac.new(settings.SECRET_KEY.encode(), self.id.encode(), hashlib.sha256)
-        return f"{self.id}|{sig.hexdigest()[:16]}"
+        return f"{self.id}|{_qr_signature(self.id)}"
 
     def to_api(self) -> dict:
         event = self.price.event
@@ -162,3 +168,35 @@ class CheckInLog(models.Model):
 
     class Meta:
         ordering = ["-scanned_at"]
+
+
+class PartnerDelivery(models.Model):
+    """Fila de avisos ao parceiro. `notify_partner()` só cria esta linha,
+    dentro da mesma transação que confirma o pagamento (ou o reembolso) —
+    nunca prende o pedido do webhook da Debito Pay à espera da resposta do
+    site do parceiro, e nunca perde o aviso se o parceiro estiver em baixo.
+    A entrega de facto corre à parte, no comando `deliver_webhooks`.
+    """
+
+    class Event(models.TextChoices):
+        TICKET_PAID = "ticket.paid", "Bilhete pago"
+        TICKET_REFUNDED = "ticket.refunded", "Bilhete reembolsado"
+
+    ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="partner_deliveries")
+    event = models.CharField(max_length=30, choices=Event.choices)
+    payload = models.JSONField(default=dict, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    gave_up_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["next_attempt_at"]
+        indexes = [
+            models.Index(fields=["delivered_at", "gave_up_at", "next_attempt_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.ticket_id} — {self.event} (#{self.pk})"

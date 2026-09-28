@@ -5,8 +5,11 @@ import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = False
+SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]  # sem valor por omissão: falha no arranque se faltar
+# Chave dedicada à assinatura dos QR de entrada, separada da SECRET_KEY: a
+# SECRET_KEY pode ser rodada sem invalidar os bilhetes já emitidos.
+QR_SIGNING_KEY = os.environ["QR_SIGNING_KEY"]
+DEBUG = os.getenv("DEBUG", "0") == "1"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 CSRF_TRUSTED_ORIGINS = [o for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o]
 
@@ -68,7 +71,7 @@ else:
 
 AUTH_USER_MODEL = "partners.User"
 LANGUAGE_CODE = "pt"
-TIME_ZONE = "UTC"
+TIME_ZONE = "Africa/Maputo"
 USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

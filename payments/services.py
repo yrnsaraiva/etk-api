@@ -21,11 +21,10 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ticketing.models import PaymentAttempt, Ticket
-from ticketing.services import confirm_payment, release
-from ticketing.webhooks import notify_partner
+from ticketing.services import confirm_payment, reclaim_and_confirm, refund, release
 
 from . import debitopay
-from .debitopay import FAILED, PENDING, SUCCEEDED, PROVIDER_NAME, Charge
+from .debitopay import FAILED, PENDING, REFUNDED, SUCCEEDED, PROVIDER_NAME, Charge
 from .exceptions import PaymentError
 from .models import ProviderEvent
 
@@ -119,27 +118,57 @@ def handle_webhook(body: bytes, headers) -> tuple[bool, str]:
 def _settle(ticket: Ticket, *, status: str, amount, currency: str | None,
            reference: str, raw: dict) -> str:
     """Aplica um resultado de pagamento a um bilhete. Ponto único usado pela
-    confirmação síncrona, pelo webhook e pela reconciliação.
+    confirmação síncrona, pelo webhook e pela reconciliação. Nunca deixa um
+    pagamento recebido cair no chão: o que não se consegue aplicar de
+    imediato fica `review`, para decisão manual no /admin/.
     """
     if status == SUCCEEDED:
         if amount is not None and Decimal(amount) != ticket.amount:
             logger.error("valor divergente no bilhete %s: cobrado %s, esperado %s",
                         ticket.id, amount, ticket.amount)
+            _mark_review(ticket)
             return "Valor divergente — retido para revisão manual."
         if currency and currency != ticket.currency:
             logger.error("moeda divergente no bilhete %s: recebida %s, esperada %s",
                         ticket.id, currency, ticket.currency)
+            _mark_review(ticket)
             return "Moeda divergente — retido para revisão manual."
 
-        confirm_payment(ticket, provider=PROVIDER_NAME, provider_reference=reference, payload=raw)
-        notify_partner(ticket)
+        if ticket.payment == Ticket.Payment.PENDING:
+            confirm_payment(ticket, provider=PROVIDER_NAME, provider_reference=reference, payload=raw)
+        elif ticket.payment != Ticket.Payment.PAID:
+            # A reserva já expirou (ou uma tentativa anterior ficou em
+            # revisão) e o dinheiro só agora chegou. Nunca recusar — tentar
+            # reservar de novo, ou ficar em revisão se não houver vaga.
+            ticket = reclaim_and_confirm(ticket, provider=PROVIDER_NAME,
+                                        provider_reference=reference, payload=raw)
+            if ticket.payment == Ticket.Payment.REVIEW:
+                logger.error("pagamento tardio sem vaga para o bilhete %s", ticket.id)
+                return "Pagamento tardio, sem vaga — retido para revisão manual."
+
+        # confirm_payment/reclaim_and_confirm já enfileiram o aviso ao
+        # parceiro (notify_partner), dentro da mesma transação.
         return "Pagamento confirmado."
 
     if status == FAILED:
         release(ticket, Ticket.Payment.FAILED)
         return "Pagamento falhou — vaga libertada."
 
+    if status == REFUNDED:
+        refund(ticket)   # já enfileira ticket.refunded, se aplicável
+        return "Pagamento reembolsado — bilhete anulado."
+
     return "Estado pendente — sem alteração."
+
+
+def _mark_review(ticket: Ticket) -> None:
+    """Marca `review` sem tocar num bilhete que entretanto já foi resolvido
+    (pago ou reembolsado) por outro caminho — sem lock, porque é uma única
+    UPDATE condicionada, não uma leitura seguida de escrita."""
+    Ticket.objects.filter(
+        pk=ticket.pk,
+        payment__in=[Ticket.Payment.PENDING, Ticket.Payment.FAILED, Ticket.Payment.REVIEW],
+    ).update(payment=Ticket.Payment.REVIEW, updated_at=timezone.now())
 
 
 def reconcile_pending(limit: int = 200) -> dict:

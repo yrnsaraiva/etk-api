@@ -33,6 +33,45 @@ class ApiKeyTests(TestCase):
         self.assertIsNotNone(self.key.last_used_at)
 
 
+class WebhookSecretTests(TestCase):
+    """Fase 2.4: com webhook_secret vazio, X-ETK-Signature é calculada com
+    uma chave vazia e não protege nada — por isso não pode existir
+    webhook_url sem segredo."""
+
+    def test_webhook_url_gera_segredo_automaticamente(self):
+        org = User.objects.create_user(
+            "org", email="org@test.local", password="Pa$$w0rd!123",
+            webhook_url="https://parceiro.example/webhook",
+        )
+        self.assertTrue(org.webhook_secret)
+        self.assertGreaterEqual(len(org.webhook_secret), 32)
+
+    def test_sem_webhook_url_nao_gera_segredo(self):
+        org = User.objects.create_user(
+            "org", email="org@test.local", password="Pa$$w0rd!123"
+        )
+        self.assertEqual(org.webhook_secret, "")
+
+    def test_segredo_existente_nao_e_substituido(self):
+        org = User.objects.create_user(
+            "org", email="org@test.local", password="Pa$$w0rd!123",
+            webhook_url="https://parceiro.example/webhook", webhook_secret="ja-tinha-um",
+        )
+        org.company_name = "Outro nome"
+        org.save()
+        org.refresh_from_db()
+        self.assertEqual(org.webhook_secret, "ja-tinha-um")
+
+    def test_definir_webhook_url_mais_tarde_tambem_gera_segredo(self):
+        org = User.objects.create_user(
+            "org", email="org@test.local", password="Pa$$w0rd!123"
+        )
+        self.assertEqual(org.webhook_secret, "")
+        org.webhook_url = "https://parceiro.example/webhook"
+        org.save()
+        self.assertTrue(org.webhook_secret)
+
+
 class AutenticacaoExternaTests(TestCase):
     def setUp(self):
         self.org = User.objects.create_user(

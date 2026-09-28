@@ -40,7 +40,7 @@ from .exceptions import InvalidSignature, PaymentDeclined, PaymentError, Provide
 
 PROVIDER_NAME = "debitopay"
 
-PENDING, SUCCEEDED, FAILED = "pending", "succeeded", "failed"
+PENDING, SUCCEEDED, FAILED, REFUNDED = "pending", "succeeded", "failed", "refunded"
 
 STATUS_MAP = {
     "success": SUCCEEDED,
@@ -68,12 +68,12 @@ METHOD_ALIASES = {
     "payfast": "payfast",
 }
 
-# event do webhook -> o nosso estado de três valores
+# event do webhook -> o nosso estado
 EVENT_STATUS = {
     "payment.completed": SUCCEEDED,
     "payment.failed": FAILED,
-    "payment.refunded": FAILED,
-    "payment.chargeback": FAILED,
+    "payment.refunded": REFUNDED,
+    "payment.chargeback": REFUNDED,
 }
 
 

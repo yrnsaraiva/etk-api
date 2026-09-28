@@ -1,5 +1,14 @@
 # Como construir a etk-api do zero
 
+> **Nota sobre esta versão.** As Etapas 10 e 11 descrevem uma abstração de
+> "provider plugável" (`payments/providers/base.py`, `fake.py`,
+> `registry.py`, a variável `PAYMENT_PROVIDER`) que já não existe no código.
+> Como só há um gateway real, isso foi simplificado para um único módulo,
+> `payments/debitopay.py`, com funções diretas — ver `docs/pagamentos.md`
+> para a arquitetura atual. Ficam aqui como registo de como o projeto foi
+> pensado inicialmente; para o estado atual, siga o código e `ESTRUTURA.md`,
+> não estas duas etapas.
+
 Doze etapas, pela ordem em que faz sentido construí-las. Cada etapa tem um
 **ponto de verificação** — se não passar, pare aí. As etapas seguintes assumem
 a anterior a funcionar.
@@ -373,7 +382,7 @@ path("back/borrow/external/tickets", ExternalTicketCreateView.as_view()),
 **Verificação — a mais importante do projeto.** Copie as funções do cliente
 real (`_etk_request`, `_get_events_from_api`, `_create_ticket_in_api`,
 `_build_event_context`) para um script, mude só o `ETK_BASE`, e corra-o. Se
-passar sem tocar no cliente, o contrato está certo. É o `client_compat_test.py`.
+passar sem tocar no cliente, o contrato está certo.
 
 ---
 
@@ -390,14 +399,20 @@ no runwithbroto.
 você avisa. Campo `webhook_url` no organizador, corpo assinado com HMAC.
 
 **Check-in no servidor, com QR assinado.** O QR do runwithbroto é
-`RWB|<id>` — quem perceber o formato entra sem bilhete. Assine-o:
+`RWB|<id>` — quem perceber o formato entra sem bilhete. Assine-o com uma
+chave dedicada, separada da `SECRET_KEY` do Django (para poder rodar uma
+sem invalidar a outra):
 
 ```python
 @property
 def qr_value(self):
-    sig = hmac.new(settings.SECRET_KEY.encode(), self.id.encode(), hashlib.sha256)
+    sig = hmac.new(settings.QR_SIGNING_KEY.encode(), self.id.encode(), hashlib.sha256)
     return f"{self.id}|{sig.hexdigest()[:16]}"
 ```
+
+Um QR sem `|assinatura` tem de ser sempre recusado — nunca aceitar o ID nu
+como um caso especial. Com IDs previsíveis (prefixo + epoch + 4 dígitos),
+isso equivaleria a não ter assinatura nenhuma.
 
 O check-in também precisa de `select_for_update()`, pela mesma razão da etapa
 5: dois leitores a scanear o mesmo bilhete em simultâneo.
@@ -408,6 +423,9 @@ com assinatura adulterada dá `invalid_qr`.
 ---
 
 ## Etapa 10 — A app payments: a porta, antes do gateway
+
+> Desatualizado — ver a nota no topo do documento. O código atual não tem
+> `payments/providers/`; é um único `payments/debitopay.py`.
 
 Contra-intuitivo mas poupa muito tempo: defina a **interface** e escreva um
 gateway falso antes de tocar no gateway real. Assim testa o fluxo inteiro sem
@@ -712,9 +730,12 @@ voltou à etapa 2.
 
 | Sintoma | Onde olhar |
 |---|---|
-| Vendeu mais bilhetes do que existem | Etapa 5 — está a correr em SQLite? |
-| Cliente recebe "erro interno" em vez da mensagem | Etapa 6 — o `exception_handler` |
-| Bilhete pago fica `pending` para sempre | Etapa 11 — webhook não chega, falta reconciliação |
-| Webhook dá sempre 401 | Etapa 11 — assina o corpo cru ou o JSON re-serializado? |
+| Vendeu mais bilhetes do que existem | Está a correr em SQLite? Só PostgreSQL tranca com `select_for_update()` — prove com `test_concurrency` |
+| Cliente recebe "erro interno" em vez da mensagem | `config/envelope.py` — o `exception_handler` |
+| Bilhete pago fica `pending` para sempre | Webhook não chega — falta o cron `reconcile_payments`, ou confira `payments/tests.py` |
+| Webhook dá sempre 401 | `DEBITOPAY_WEBHOOK_SECRET` errada, ou assina o corpo cru vs. o JSON re-serializado — ver `docs/pagamentos.md` |
+| Pagamento chegou mas o bilhete não passa a `paid` nem a `failed` | Ficou `review` — reserva já tinha expirado ou valor/moeda divergente; ver `/admin/` e `docs/pagamentos.md` |
 | Vagas presas em reservas mortas | Falta o cron do `expire_tickets` |
-| Bilhete entra duas vezes | Etapa 9 — falta `select_for_update` no check-in |
+| Bilhete entra duas vezes | Falta `select_for_update` no check-in, ou `payment` não está em `Ticket.ENTRY_ALLOWED` |
+| Parceiro nunca recebe o aviso `ticket.paid`/`ticket.refunded` | Falta o cron `deliver_webhooks`, ou veja `PartnerDelivery.last_error` no `/admin/` |
+| QR de um bilhete pago é recusado (`invalid_qr`) | `QR_SIGNING_KEY` mudou desde que o QR foi emitido |

@@ -11,7 +11,6 @@ from ticketing.views import (
     ExternalEventListView,
     ExternalTicketCreateView,
     ExternalTicketDetailView,
-    payment_callback,
 )
 
 router = DefaultRouter()
@@ -30,7 +29,6 @@ urlpatterns = [
     path(f"{EXTERNAL}/tickets", ExternalTicketCreateView.as_view()),
     path(f"{EXTERNAL}/tickets/check-in", ExternalCheckInView.as_view()),
     path(f"{EXTERNAL}/tickets/<str:ticket_id>", ExternalTicketDetailView.as_view()),
-    path("back/payments/callback", payment_callback),
     path("back/payments/webhooks/debitopay", debitopay_webhook),
 
     # --- API de gestão: o organizador, autenticado com JWT ---

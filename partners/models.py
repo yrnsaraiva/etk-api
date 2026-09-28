@@ -16,6 +16,15 @@ class User(AbstractUser):
 
     REQUIRED_FIELDS = ["email"]
 
+    def save(self, *args, **kwargs):
+        # Com webhook_secret vazio, a assinatura X-ETK-Signature é calculada
+        # com uma chave vazia e não protege nada. Gerar aqui garante que
+        # nunca existe webhook_url sem segredo, sem depender de quem cria o
+        # registo se lembrar de o fazer.
+        if self.webhook_url and not self.webhook_secret:
+            self.webhook_secret = secrets.token_urlsafe(32)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.company_name or self.get_username()
 

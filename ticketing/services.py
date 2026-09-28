@@ -1,6 +1,5 @@
 """Regras de negócio. O ponto crítico é não vender mais bilhetes do que existem."""
 
-import hashlib
 import hmac
 from datetime import timedelta
 
@@ -12,7 +11,8 @@ from rest_framework.exceptions import ValidationError
 
 from catalog.models import Event, Price, make_id
 
-from .models import CheckInLog, PaymentAttempt, Ticket
+from .models import CheckInLog, PaymentAttempt, Ticket, _qr_signature
+from .webhooks import notify_partner
 
 
 class TicketError(ValidationError):
@@ -113,6 +113,49 @@ def confirm_payment(ticket: Ticket, *, provider: str, provider_reference: str,
     ticket.paid_at = timezone.now()
     ticket.expires_at = None
     ticket.save(update_fields=["payment", "paid_at", "expires_at", "updated_at"])
+    notify_partner(ticket)
+    return ticket
+
+
+@transaction.atomic
+def reclaim_and_confirm(ticket: Ticket, *, provider: str, provider_reference: str,
+                        payload: dict | None = None) -> Ticket:
+    """Confirma um pagamento que chegou depois de a reserva ter expirado (ou de
+    uma tentativa anterior ter ficado em revisão).
+
+    O dinheiro já foi aceite pelo gateway — a única coisa que ainda está em
+    aberto é se há vaga para o bilhete. Tenta reservar de novo uma vaga no
+    mesmo lote, com o mesmo lock de `create_ticket`; se houver, confirma como
+    `paid`. Se não houver, fica `review` para decisão manual no /admin/ — mas
+    o pagamento nunca é ignorado nem perdido.
+    """
+    ticket = Ticket.objects.select_for_update().select_related("price").get(pk=ticket.pk)
+
+    if ticket.payment == Ticket.Payment.PAID:
+        return ticket
+    if ticket.payment not in (Ticket.Payment.FAILED, Ticket.Payment.REVIEW):
+        raise TicketError(f"Bilhete em estado '{ticket.payment}'.")
+
+    price = Price.objects.select_for_update().get(pk=ticket.price_id)
+
+    PaymentAttempt.objects.create(
+        ticket=ticket, provider=provider, provider_reference=provider_reference,
+        amount=ticket.amount, succeeded=True, raw_payload=payload or {},
+    )
+
+    if price.available > 0:
+        Price.objects.filter(pk=price.pk).update(quantity_reserved=F("quantity_reserved") + 1)
+        if price.available - 1 <= 0:
+            Price.objects.filter(pk=price.pk).update(status=Price.Status.SOLD_OUT)
+        ticket.payment = Ticket.Payment.PAID
+        ticket.status = Ticket.Status.VALID
+        ticket.paid_at = timezone.now()
+        ticket.expires_at = None
+        ticket.save(update_fields=["payment", "status", "paid_at", "expires_at", "updated_at"])
+        notify_partner(ticket)
+    else:
+        ticket.payment = Ticket.Payment.REVIEW
+        ticket.save(update_fields=["payment", "updated_at"])
     return ticket
 
 
@@ -131,6 +174,36 @@ def release(ticket: Ticket, payment_status: str) -> Ticket:
     ticket.payment = payment_status
     ticket.status = Ticket.Status.EXPIRED
     ticket.save(update_fields=["payment", "status", "updated_at"])
+    return ticket
+
+
+@transaction.atomic
+def refund(ticket: Ticket) -> Ticket:
+    """Reembolso ou chargeback: anula o bilhete.
+
+    Cobre dois pontos de entrada — o webhook `payment.refunded`/
+    `payment.chargeback` (ticket `paid`) e a ação de admin "Marcar para
+    reembolso" sobre um ticket `review` (nunca chegou a reservar vaga, por
+    isso não há nada a devolver ao lote). Idempotente: um ticket já
+    `refunded` ou nalgum outro estado não sofre nada.
+    """
+    ticket = Ticket.objects.select_for_update().select_related("price__event").get(pk=ticket.pk)
+    if ticket.payment not in (Ticket.Payment.PAID, Ticket.Payment.REVIEW):
+        return ticket
+
+    ocupava_vaga = ticket.payment == Ticket.Payment.PAID
+    ticket.payment = Ticket.Payment.REFUNDED
+    ticket.status = Ticket.Status.CANCELLED
+    ticket.save(update_fields=["payment", "status", "updated_at"])
+
+    if ocupava_vaga and ticket.event.date > timezone.now():
+        Price.objects.filter(pk=ticket.price_id).update(
+            quantity_reserved=F("quantity_reserved") - 1
+        )
+        Price.objects.filter(pk=ticket.price_id, status=Price.Status.SOLD_OUT).update(
+            status=Price.Status.ACTIVE
+        )
+    notify_partner(ticket, event_name="ticket.refunded")
     return ticket
 
 
@@ -200,16 +273,13 @@ def expire_stale_tickets() -> int:
 
 
 def parse_qr(qr_value: str) -> str | None:
-    """Aceita `TCKT…` ou `TCKT…|assinatura`, verificando o HMAC quando presente."""
-    qr_value = (qr_value or "").strip()
-    if not qr_value.startswith("TCKT"):
+    """Aceita só `TCKT…|assinatura`, verificando o HMAC. Sem assinatura = inválido:
+    com IDs previsíveis, aceitar `TCKT…` nu deixava entrar quem adivinhasse o ID
+    de um bilhete pago."""
+    ticket_id, sep, sig = (qr_value or "").strip().partition("|")
+    if not ticket_id.startswith("TCKT") or not sep:
         return None
-    if "|" not in qr_value:
-        return qr_value
-    ticket_id, _, sig = qr_value.partition("|")
-    expected = hmac.new(
-        settings.SECRET_KEY.encode(), ticket_id.encode(), hashlib.sha256
-    ).hexdigest()[:16]
+    expected = _qr_signature(ticket_id)
     return ticket_id if hmac.compare_digest(expected, sig) else None
 
 
@@ -242,9 +312,13 @@ def check_in(*, qr_value: str, staff_user) -> tuple[str, str, Ticket | None]:
         log(CheckInLog.Result.NOT_FOUND, ticket_id)
         return CheckInLog.Result.NOT_FOUND, "Bilhete de outro evento.", None
 
-    if ticket.payment != Ticket.Payment.PAID:
+    if ticket.payment not in Ticket.ENTRY_ALLOWED:
         log(CheckInLog.Result.NOT_PAID, ticket_id)
         return CheckInLog.Result.NOT_PAID, f"Pagamento não confirmado ({ticket.payment}).", ticket
+
+    if ticket.status != Ticket.Status.VALID:
+        log(CheckInLog.Result.NOT_PAID, ticket_id)
+        return CheckInLog.Result.NOT_PAID, f"Bilhete {ticket.get_status_display().lower()}.", ticket
 
     if ticket.entered:
         log(CheckInLog.Result.ALREADY_ENTERED, ticket_id)
