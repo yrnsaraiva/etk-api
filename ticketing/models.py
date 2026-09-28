@@ -23,6 +23,7 @@ class Ticket(models.Model):
         FAILED = "failed", "Falhou"
         REFUNDED = "refunded", "Reembolsado"
         INVITED = "invited", "Convite"
+        REVIEW = "review", "Em revisão"
 
     ENTRY_ALLOWED = {"paid", "invited"}
 

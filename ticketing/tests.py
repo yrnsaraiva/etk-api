@@ -10,7 +10,7 @@ from partners.models import ApiKey, User
 from ticketing.models import Ticket
 from ticketing.services import (
     TicketError, check_in, confirm_payment, create_ticket,
-    expire_stale_tickets, parse_qr,
+    expire_stale_tickets, parse_qr, reclaim_and_confirm, refund, release,
 )
 
 
@@ -245,3 +245,100 @@ class ContratoExternoTests(Base):
         )
         r = self.client.get(f"/back/borrow/external/events/{alheio.id}")
         self.assertEqual(r.status_code, 404)
+
+
+class ReclamacaoTardiaTests(Base):
+    """Fase 2.1: um pagamento que chega depois de a reserva expirar nunca
+    pode ser recusado — só fica em revisão se não houver vaga."""
+
+    def test_com_vaga_livre_confirma_como_pago(self):
+        t = self.emitir()
+        release(t, Ticket.Payment.FAILED)   # simula o cron de expiração
+        t.refresh_from_db()
+        self.assertEqual(t.payment, Ticket.Payment.FAILED)
+
+        t = reclaim_and_confirm(t, provider="debitopay", provider_reference="ref-tardio")
+        self.assertEqual(t.payment, Ticket.Payment.PAID)
+        self.assertEqual(t.status, Ticket.Status.VALID)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 1)
+
+    def test_sem_vaga_fica_em_revisao(self):
+        # price (Base) só tem 2 vagas: a primeira fica paga e ocupa-a.
+        t1 = self.emitir("258841111111")
+        confirm_payment(t1, provider="debitopay", provider_reference="ref1")
+        t2 = self.emitir("258842222222")
+        release(t2, Ticket.Payment.FAILED)   # t2 expira sem pagar, liberta a 2ª vaga
+        # outra compra ocupa de novo a vaga que t2 libertou, antes do
+        # pagamento tardio de t2 chegar.
+        t3 = self.emitir("258843333333")
+        confirm_payment(t3, provider="debitopay", provider_reference="ref3")
+
+        t2 = reclaim_and_confirm(t2, provider="debitopay", provider_reference="ref-tardio")
+        self.assertEqual(t2.payment, Ticket.Payment.REVIEW)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 2)   # t1 e t3, não t2
+
+    def test_review_reconfirmado_quando_liberta_vaga(self):
+        """A ação de admin 'Confirmar pagamento' chama a mesma função sobre
+        um ticket já em review."""
+        t1 = confirm_payment(self.emitir("258841111111"), provider="debitopay",
+                             provider_reference="ref1")
+        t2 = self.emitir("258842222222")
+        release(t2, Ticket.Payment.FAILED)
+        t3 = confirm_payment(self.emitir("258843333333"), provider="debitopay",
+                             provider_reference="ref3")
+
+        t2 = reclaim_and_confirm(t2, provider="debitopay", provider_reference="ref-tardio")
+        self.assertEqual(t2.payment, Ticket.Payment.REVIEW)
+
+        refund(t1)   # liberta uma das duas vagas ocupadas (t1 e t3)
+        t2 = reclaim_and_confirm(t2, provider="admin", provider_reference="manual")
+        self.assertEqual(t2.payment, Ticket.Payment.PAID)
+
+
+class ReembolsoTests(Base):
+    """Fase 2.2: reembolso/chargeback anulam o bilhete e devolvem a vaga."""
+
+    def test_reembolso_de_bilhete_pago_liberta_a_vaga_e_impede_entrada(self):
+        t = confirm_payment(self.emitir(), provider="debitopay", provider_reference="ref1")
+        self.price.refresh_from_db()
+        antes = self.price.available
+
+        t = refund(t)
+        self.assertEqual(t.payment, Ticket.Payment.REFUNDED)
+        self.assertEqual(t.status, Ticket.Status.CANCELLED)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.available, antes + 1)
+
+        result, _, _ = check_in(qr_value=t.qr_value, staff_user=self.org)
+        self.assertEqual(result, "not_paid")
+
+    def test_reembolso_de_bilhete_em_revisao_nao_toca_na_vaga(self):
+        # Ocupa as duas vagas do Base com outros bilhetes pagos, para o
+        # bilhete "tardio" ficar mesmo sem vaga quando reclamar.
+        confirm_payment(self.emitir("258841111111"), provider="debitopay", provider_reference="ref1")
+        t = self.emitir("258842222222")
+        release(t, Ticket.Payment.FAILED)
+        confirm_payment(self.emitir("258843333333"), provider="debitopay", provider_reference="ref3")
+
+        t = reclaim_and_confirm(t, provider="debitopay", provider_reference="tardio")
+        self.assertEqual(t.payment, Ticket.Payment.REVIEW)
+        self.price.refresh_from_db()
+        antes = self.price.quantity_reserved
+
+        t = refund(t)
+        self.assertEqual(t.payment, Ticket.Payment.REFUNDED)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, antes)   # nunca tinha ocupado vaga
+
+    def test_reembolso_e_idempotente(self):
+        t = confirm_payment(self.emitir(), provider="debitopay", provider_reference="ref1")
+        refund(t)
+        self.price.refresh_from_db()
+        vagas_depois_do_primeiro = self.price.available
+
+        t.refresh_from_db()
+        refund(t)   # segunda chamada não deve devolver a vaga outra vez
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.available, vagas_depois_do_primeiro)
