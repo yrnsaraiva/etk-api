@@ -6,6 +6,11 @@ from django.db import models
 from catalog.models import Price, make_id
 
 
+def _qr_signature(ticket_id: str) -> str:
+    sig = hmac.new(settings.QR_SIGNING_KEY.encode(), ticket_id.encode(), hashlib.sha256)
+    return sig.hexdigest()[:16]
+
+
 class Ticket(models.Model):
     class Status(models.TextChoices):
         VALID = "valid", "Válido"
@@ -94,8 +99,7 @@ class Ticket(models.Model):
     @property
     def qr_value(self) -> str:
         """`TCKT…|assinatura` — o porteiro valida sem confiar num ID adivinhável."""
-        sig = hmac.new(settings.SECRET_KEY.encode(), self.id.encode(), hashlib.sha256)
-        return f"{self.id}|{sig.hexdigest()[:16]}"
+        return f"{self.id}|{_qr_signature(self.id)}"
 
     def to_api(self) -> dict:
         event = self.price.event

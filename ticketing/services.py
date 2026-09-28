@@ -1,6 +1,5 @@
 """Regras de negócio. O ponto crítico é não vender mais bilhetes do que existem."""
 
-import hashlib
 import hmac
 from datetime import timedelta
 
@@ -12,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 
 from catalog.models import Event, Price, make_id
 
-from .models import CheckInLog, PaymentAttempt, Ticket
+from .models import CheckInLog, PaymentAttempt, Ticket, _qr_signature
 
 
 class TicketError(ValidationError):
@@ -200,16 +199,13 @@ def expire_stale_tickets() -> int:
 
 
 def parse_qr(qr_value: str) -> str | None:
-    """Aceita `TCKT…` ou `TCKT…|assinatura`, verificando o HMAC quando presente."""
-    qr_value = (qr_value or "").strip()
-    if not qr_value.startswith("TCKT"):
+    """Aceita só `TCKT…|assinatura`, verificando o HMAC. Sem assinatura = inválido:
+    com IDs previsíveis, aceitar `TCKT…` nu deixava entrar quem adivinhasse o ID
+    de um bilhete pago."""
+    ticket_id, sep, sig = (qr_value or "").strip().partition("|")
+    if not ticket_id.startswith("TCKT") or not sep:
         return None
-    if "|" not in qr_value:
-        return qr_value
-    ticket_id, _, sig = qr_value.partition("|")
-    expected = hmac.new(
-        settings.SECRET_KEY.encode(), ticket_id.encode(), hashlib.sha256
-    ).hexdigest()[:16]
+    expected = _qr_signature(ticket_id)
     return ticket_id if hmac.compare_digest(expected, sig) else None
 
 
@@ -242,9 +238,13 @@ def check_in(*, qr_value: str, staff_user) -> tuple[str, str, Ticket | None]:
         log(CheckInLog.Result.NOT_FOUND, ticket_id)
         return CheckInLog.Result.NOT_FOUND, "Bilhete de outro evento.", None
 
-    if ticket.payment != Ticket.Payment.PAID:
+    if ticket.payment not in Ticket.ENTRY_ALLOWED:
         log(CheckInLog.Result.NOT_PAID, ticket_id)
         return CheckInLog.Result.NOT_PAID, f"Pagamento não confirmado ({ticket.payment}).", ticket
+
+    if ticket.status != Ticket.Status.VALID:
+        log(CheckInLog.Result.NOT_PAID, ticket_id)
+        return CheckInLog.Result.NOT_PAID, f"Bilhete {ticket.get_status_display().lower()}.", ticket
 
     if ticket.entered:
         log(CheckInLog.Result.ALREADY_ENTERED, ticket_id)

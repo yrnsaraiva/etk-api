@@ -142,9 +142,36 @@ class CheckInTests(Base):
         result, _, _ = check_in(qr_value=falso, staff_user=self.org)
         self.assertEqual(result, "invalid_qr")
 
+    def test_id_nu_sem_assinatura_e_recusado(self):
+        """Com IDs previsíveis (TCKT + sequência), aceitar o ID nu deixaria
+        entrar quem adivinhasse o ID de um bilhete pago."""
+        self.assertIsNone(parse_qr(self.ticket.id))
+        result, _, _ = check_in(qr_value=self.ticket.id, staff_user=self.org)
+        self.assertEqual(result, "invalid_qr")
+
     def test_bilhete_por_pagar_nao_entra(self):
         pendente = self.emitir("258842222222")
         result, _, _ = check_in(qr_value=pendente.qr_value, staff_user=self.org)
+        self.assertEqual(result, "not_paid")
+
+    def test_convite_entra(self):
+        from ticketing.services import issue_invites
+
+        [convite] = issue_invites(
+            price_id=self.price.id, event_id=self.event.id, organizer=self.org
+        )
+        result, _, t = check_in(qr_value=convite.qr_value, staff_user=self.org)
+        self.assertEqual(result, "ok")
+        self.assertTrue(t.entered)
+        result, _, _ = check_in(qr_value=convite.qr_value, staff_user=self.org)
+        self.assertEqual(result, "already_entered")
+
+    def test_bilhete_cancelado_nao_entra(self):
+        cancelado = confirm_payment(self.emitir("258842222233"), provider="fake",
+                                    provider_reference="ref2")
+        cancelado.status = Ticket.Status.CANCELLED
+        cancelado.save(update_fields=["status"])
+        result, _, _ = check_in(qr_value=cancelado.qr_value, staff_user=self.org)
         self.assertEqual(result, "not_paid")
 
     def test_organizador_alheio_nao_valida(self):
