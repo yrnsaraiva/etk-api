@@ -8,8 +8,18 @@ from .models import ApiKey, User
 class PartnerUserAdmin(UserAdmin):
     list_display = ("username", "email", "company_name", "is_staff")
     fieldsets = UserAdmin.fieldsets + (
-        ("Parceiro", {"fields": ("company_name", "webhook_url", "webhook_secret")}),
+        ("Parceiro", {
+            "fields": ("company_name", "webhook_url", "webhook_secret"),
+            "description": (
+                "webhook_secret é gerado automaticamente ao gravar um webhook_url "
+                "vazio de segredo — não é editável aqui. Mostre-o ao parceiro uma "
+                "única vez: ele valida cada aviso recalculando HMAC-SHA256 (em "
+                "hexadecimal) sobre o corpo cru do pedido com este segredo, e "
+                "comparando com o cabeçalho X-ETK-Signature."
+            ),
+        }),
     )
+    readonly_fields = UserAdmin.readonly_fields + ("webhook_secret",)
 
 
 @admin.register(ApiKey)
