@@ -3,11 +3,16 @@
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
+from config.envelope import EnvelopeMixin, fail, ok
 from partners.models import ApiKey
 
 from .models import Event, Price
+
+
+class GestaoViewSet(EnvelopeMixin, viewsets.ModelViewSet):
+    """Base comum às rotas /api/ de gestão: mesmo envelope {status, message,
+    data} das rotas externas, em vez do JSON cru que o DRF gera sozinho."""
 
 
 class PriceSerializer(serializers.ModelSerializer):
@@ -52,7 +57,7 @@ class EventSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at")
 
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(GestaoViewSet):
     serializer_class = EventSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ["status", "category", "province"]
@@ -70,16 +75,16 @@ class EventViewSet(viewsets.ModelViewSet):
         """Lista de participantes do evento — para o dashboard do organizador."""
         from ticketing.models import Ticket
         qs = Ticket.objects.filter(price__event=self.get_object()).select_related("price")
-        return Response({
+        return ok({
             "count": qs.count(),
             "paid": qs.filter(payment=Ticket.Payment.PAID).count(),
             "invited": qs.filter(payment=Ticket.Payment.INVITED).count(),
             "entered": qs.filter(entered=True).count(),
             "results": [t.to_api() for t in qs[:200]],
-        })
+        }, "Tickets retrieved successfully")
 
 
-class PriceViewSet(viewsets.ModelViewSet):
+class PriceViewSet(GestaoViewSet):
     serializer_class = PriceSerializer
     permission_classes = [IsAuthenticated]
     filterset_fields = ["event", "status"]
@@ -109,9 +114,9 @@ class PriceViewSet(viewsets.ModelViewSet):
                 note=data.get("note", ""),
             )
         except TicketError as exc:
-            return Response({"detail": str(exc)}, status=400)
+            return fail(str(exc))
 
-        return Response([t.to_api() for t in tickets], status=201)
+        return ok([t.to_api() for t in tickets], "Invites created successfully", 201)
 
 
 class ApiKeySerializer(serializers.ModelSerializer):
@@ -122,7 +127,7 @@ class ApiKeySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ApiKeyViewSet(viewsets.ModelViewSet):
+class ApiKeyViewSet(GestaoViewSet):
     """O valor em claro da chave aparece uma única vez: na resposta ao POST."""
 
     serializer_class = ApiKeySerializer
@@ -141,7 +146,7 @@ class ApiKeyViewSet(viewsets.ModelViewSet):
         data = ApiKeySerializer(key).data
         data["key"] = raw
         data["warning"] = "Guarde esta chave agora. Não voltará a ser mostrada."
-        return Response(data, status=201)
+        return ok(data, "API key created successfully", 201)
 
     def perform_destroy(self, instance):
         instance.revoke()
