@@ -195,6 +195,34 @@ class ContratoExternoTests(Base):
                              format="json")
         self.assertEqual(r.status_code, 404)
 
+    def test_contagem_de_vendidos_nao_faz_uma_consulta_por_evento(self):
+        """Fase 4.3: total_tickets_purchased anotado numa só consulta —
+        5 eventos extra, cada um com um bilhete pago, não pode fazer o
+        número de queries escalar com o número de eventos."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for i in range(5):
+            ev = Event.objects.create(
+                organizer=self.org, name=f"Extra {i}",
+                date=timezone.now() + timedelta(days=10), status=Event.Status.PUBLISHED,
+            )
+            price = Price.objects.create(
+                event=ev, name="Geral", amount=Decimal("100.00"), quantity_total=5
+            )
+            t = create_ticket(price_id=price.id, event_id=ev.id,
+                              phone="258840000000", issued_to=self.org)
+            confirm_payment(t, provider="fake", provider_reference="x")
+
+        with CaptureQueriesContext(connection) as ctx:
+            r = self.client.get("/back/borrow/external/events")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data["data"]), 6)   # self.event + os 5 extra
+        # bem acima do necessário (evento+contagem, prefetch de prices, auth
+        # da chave), mas não escala com o número de eventos — uma consulta
+        # de contagem por evento daria 11+ com 6 eventos.
+        self.assertLessEqual(len(ctx.captured_queries), 6)
+
     def test_lista_de_eventos_tem_envelope(self):
         r = self.client.get("/back/borrow/external/events")
         self.assertEqual(r.data["status"], "success")

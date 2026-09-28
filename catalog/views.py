@@ -58,7 +58,9 @@ class EventViewSet(viewsets.ModelViewSet):
     filterset_fields = ["status", "category", "province"]
 
     def get_queryset(self):
-        return Event.objects.filter(organizer=self.request.user).prefetch_related("prices")
+        return Event.with_ticket_counts(
+            Event.objects.filter(organizer=self.request.user)
+        ).prefetch_related("prices")
 
     def perform_create(self, serializer):
         serializer.save(organizer=self.request.user)

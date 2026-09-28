@@ -35,11 +35,9 @@ class ExternalEventListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        events = (
+        events = Event.with_ticket_counts(
             Event.objects.filter(status=Event.Status.PUBLISHED, organizer=request.user)
-            .prefetch_related("prices")
-            .order_by("date")
-        )
+        ).prefetch_related("prices").order_by("date")
         if request.query_params.get("upcoming") == "true":
             events = events.filter(date__gte=timezone.now())
         return ok([e.to_api() for e in events], "Events retrieved successfully")
