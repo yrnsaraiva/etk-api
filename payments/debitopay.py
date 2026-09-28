@@ -99,22 +99,23 @@ class WebhookEvent:
     raw: dict = field(default_factory=dict)
 
 
-def _cfg() -> dict:
-    return settings.DEBITOPAY
+def _cfg(sandbox: bool = False) -> dict:
+    return settings.DEBITOPAY_SANDBOX if sandbox else settings.DEBITOPAY
 
 
-def _headers() -> dict:
+def _headers(sandbox: bool = False) -> dict:
     return {
-        "Authorization": f"Bearer {_cfg()['SECRET_KEY']}",
+        "Authorization": f"Bearer {_cfg(sandbox)['SECRET_KEY']}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
 
-def _post(path: str, payload: dict) -> dict:
-    url = f"{_cfg()['BASE_URL'].rstrip('/')}{path}"
+def _post(path: str, payload: dict, *, sandbox: bool = False) -> dict:
+    cfg = _cfg(sandbox)
+    url = f"{cfg['BASE_URL'].rstrip('/')}{path}"
     try:
-        resp = requests.post(url, headers=_headers(), json=payload, timeout=_cfg().get("TIMEOUT", 90))
+        resp = requests.post(url, headers=_headers(sandbox), json=payload, timeout=cfg.get("TIMEOUT", 90))
     except requests.RequestException as exc:
         # Nunca chegou resposta — transporte, não negócio. Retryable.
         raise ProviderUnavailable(f"Debito Pay inacessível: {exc}") from exc
@@ -132,14 +133,16 @@ def _post(path: str, payload: dict) -> dict:
     return body
 
 
-def _method_for(method: str | None) -> str:
-    wallets = _cfg()["WALLETS"]
+def _method_for(method: str | None, *, sandbox: bool = False) -> str:
+    cfg = _cfg(sandbox)
+    wallets = cfg["WALLETS"]
     key = (method or "").strip().lower()
-    resolved = METHOD_ALIASES.get(key, _cfg().get("DEFAULT_METHOD", "mpesa"))
+    resolved = METHOD_ALIASES.get(key, cfg.get("DEFAULT_METHOD", "mpesa"))
     if resolved not in wallets or not wallets[resolved]:
+        ambiente = "DEBITOPAY_SANDBOX_WALLET" if sandbox else "DEBITOPAY_WALLET"
         raise PaymentError(
             f"Sem wallet_code configurada para o método '{resolved}'. "
-            f"Defina DEBITOPAY_WALLET_{resolved.upper()} no ambiente."
+            f"Defina {ambiente}_{resolved.upper()} no ambiente."
         )
     return resolved
 
@@ -169,11 +172,17 @@ def _to_charge(data: dict) -> Charge:
     )
 
 
-def create_charge(*, amount, currency, reference, phone, method, description, callback_url) -> Charge:
+def create_charge(*, amount, currency, reference, phone, method, description, callback_url,
+                  sandbox: bool = False) -> Charge:
     """Inicia a cobrança. `reference` (o nosso Ticket.id) viaja como source_id,
-    rastreável do lado da Debito Pay."""
-    method_key = _method_for(method)
-    cfg = _cfg()
+    rastreável do lado da Debito Pay.
+
+    `sandbox=True` (bilhete criado com uma chave `etk_test_…`) usa
+    `settings.DEBITOPAY_SANDBOX` em vez de `settings.DEBITOPAY` — sem isto,
+    uma chave de teste cobrava dinheiro real como qualquer outra.
+    """
+    method_key = _method_for(method, sandbox=sandbox)
+    cfg = _cfg(sandbox)
     payload = {
         "action": "process",
         "payment_method": method_key,
@@ -194,23 +203,31 @@ def create_charge(*, amount, currency, reference, phone, method, description, ca
         if description:
             payload["customer_name"] = description[:140]
 
-    body = _post("/payment-orchestrator", payload)
+    body = _post("/payment-orchestrator", payload, sandbox=sandbox)
     return _to_charge(body)
 
 
-def fetch_charge(reference: str) -> Charge:
+def fetch_charge(reference: str, *, sandbox: bool = False) -> Charge:
     """Lê o estado atual. Usado na reconciliação, quando o webhook se perde."""
-    body = _post("/payment-orchestrator", {"action": "check-status", "payment_id": reference})
+    body = _post("/payment-orchestrator", {"action": "check-status", "payment_id": reference},
+                 sandbox=sandbox)
     payment = body.get("payment", body)
     return _to_charge(payment)
 
 
 def parse_webhook(body: bytes, headers: Mapping[str, str]) -> WebhookEvent:
-    """Valida a assinatura e devolve o evento. Levanta InvalidSignature."""
+    """Valida a assinatura e devolve o evento. Levanta InvalidSignature.
+
+    O mesmo endpoint recebe webhooks das duas contas (live e sandbox) — não
+    há como saber qual delas antes de validar, por isso tenta o segredo da
+    live e, se não bater, o da sandbox.
+    """
     cfg = _cfg()
     signature_header = cfg.get("SIGNATURE_HEADER", "X-Webhook-Signature")
     signature = headers.get(signature_header) or headers.get(signature_header.lower(), "")
-    if not _signature_ok(body, signature, cfg["WEBHOOK_SECRET"]):
+    sandbox_secret = _cfg(sandbox=True)["WEBHOOK_SECRET"]
+    if not (_signature_ok(body, signature, cfg["WEBHOOK_SECRET"])
+           or (sandbox_secret and _signature_ok(body, signature, sandbox_secret))):
         raise InvalidSignature("Assinatura do webhook inválida.")
 
     payload = json.loads(body.decode())

@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from catalog.models import Event
 from config.envelope import fail, ok
 from partners.authentication import ApiKeyAuthentication
+from partners.models import ApiKey
 
 from .models import Ticket
 from payments.exceptions import PaymentDeclined, PaymentError
@@ -35,11 +36,9 @@ class ExternalEventListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        events = (
+        events = Event.with_ticket_counts(
             Event.objects.filter(status=Event.Status.PUBLISHED, organizer=request.user)
-            .prefetch_related("prices")
-            .order_by("date")
-        )
+        ).prefetch_related("prices").order_by("date")
         if request.query_params.get("upcoming") == "true":
             events = events.filter(date__gte=timezone.now())
         return ok([e.to_api() for e in events], "Events retrieved successfully")
@@ -124,6 +123,7 @@ class ExternalTicketCreateView(APIView):
                 email=data.get("email", ""),
                 payment_method=data.get("paymentMethod", ""),
                 external_reference=data.get("externalReference", ""),
+                test_mode=(getattr(request.auth, "environment", None) == ApiKey.Environment.TEST),
             )
 
             # Ticket já existia (mesmo externalReference) e já tem pagamento

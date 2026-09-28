@@ -34,3 +34,27 @@ def envelope_exception_handler(exc, context):
     detail = data.get("detail", data) if isinstance(data, dict) else data
     response.data = {"status": "error", "message": _flatten(detail), "data": None}
     return response
+
+
+class EnvelopeMixin:
+    """Envolve em {status, message, data} as respostas que o DRF gera
+    sozinho (list/retrieve/create/update/destroy dos ViewSets de gestão),
+    para o mesmo formato das rotas externas. `ok()`/`fail()` e o
+    `envelope_exception_handler` já produzem esse formato diretamente — só
+    entram aqui as respostas "cruas" que ainda não o têm. Feito em
+    `finalize_response` (não num Renderer) para `response.data` refletir o
+    envelope também nos testes, que leem `.data` sem passar pelo Renderer.
+    """
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        data = response.data
+        if data is None or (isinstance(data, dict) and {"status", "message"} <= data.keys()):
+            return response
+        success = response.status_code < 400
+        response.data = {
+            "status": "success" if success else "error",
+            "message": "Success" if success else "Error",
+            "data": data,
+        }
+        return response

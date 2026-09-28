@@ -6,8 +6,9 @@ from .services import reclaim_and_confirm, refund
 
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
-    list_display = ("id", "phone", "full_name", "price", "payment", "entered", "created_at")
-    list_filter = ("payment", "entered", "status", "provider")
+    list_display = ("id", "phone", "full_name", "price", "payment", "entered",
+                    "test_mode", "created_at")
+    list_filter = ("payment", "entered", "status", "provider", "test_mode")
     search_fields = ("id", "phone", "full_name", "email", "provider_charge_id")
     readonly_fields = ("id", "qr_value", "created_at", "updated_at")
     actions = ["confirmar_pagamento", "marcar_para_reembolso"]

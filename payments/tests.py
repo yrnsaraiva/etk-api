@@ -253,3 +253,65 @@ class ReconciliacaoTests(Base):
         t.refresh_from_db()
         self.assertEqual(t.payment, Ticket.Payment.REVIEW)
         self.assertEqual(stats["erros"], 1)
+
+
+DEBITOPAY_SANDBOX_TEST = {
+    "BASE_URL": "https://sandbox.example/functions/v1",
+    "SECRET_KEY": "sk_sandbox_de_verdade",
+    "WEBHOOK_SECRET": "webhook-secret-sandbox",
+    "SIGNATURE_HEADER": "X-Webhook-Signature",
+    "MERCHANT_ID": "99999999-9999-9999-9999-999999999999",
+    "WALLETS": {
+        "mpesa": "s-12345", "emola": "s-22222", "mkesh": "s-33333",
+        "visa_mastercard": "s-44444", "payfast": "s-55555",
+    },
+    "DEFAULT_METHOD": "mpesa",
+    "TIMEOUT": 30,
+}
+
+
+@override_settings(DEBITOPAY=DEBITOPAY_TEST, DEBITOPAY_SANDBOX=DEBITOPAY_SANDBOX_TEST)
+class ChaveDeTesteTests(Base):
+    """Fase 4.2: um bilhete criado com uma chave etk_test_… nunca pode
+    cobrar de verdade — tem de usar as credenciais da sandbox."""
+
+    def setUp(self):
+        super().setUp()
+        _, raw_test = ApiKey.issue(self.org, environment=ApiKey.Environment.TEST)
+        self.api_test = APIClient()
+        self.api_test.credentials(HTTP_AUTHORIZATION=f"Bearer {raw_test}")
+
+    @patch("payments.debitopay.requests.post")
+    def test_compra_com_chave_test_usa_a_sandbox(self, post):
+        post.return_value = _post_resp({
+            "success": True, "payment_id": "pay_sandbox_x", "payment_method": "mpesa",
+            "status": "pending",
+        })
+        r = self.api_test.post("/back/borrow/external/tickets",
+                               {"priceId": self.price.id, "eventId": self.event.id,
+                                "phone": "258841111111", "paymentMethod": "mpesa"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+
+        ticket = Ticket.objects.get(pk=r.data["data"]["id"])
+        self.assertTrue(ticket.test_mode)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"],
+                         f"Bearer {DEBITOPAY_SANDBOX_TEST['SECRET_KEY']}")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["wallet_code"], DEBITOPAY_SANDBOX_TEST["WALLETS"]["mpesa"])
+        self.assertEqual(sent["merchant_id"], DEBITOPAY_SANDBOX_TEST["MERCHANT_ID"])
+
+    @patch("payments.debitopay.requests.post")
+    def test_compra_com_chave_live_nao_usa_a_sandbox(self, post):
+        post.return_value = _post_resp({
+            "success": True, "payment_id": "pay_live_x", "payment_method": "mpesa",
+            "status": "pending",
+        })
+        r = self.api.post("/back/borrow/external/tickets",
+                          {"priceId": self.price.id, "eventId": self.event.id,
+                           "phone": "258842222222", "paymentMethod": "mpesa"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+
+        ticket = Ticket.objects.get(pk=r.data["data"]["id"])
+        self.assertFalse(ticket.test_mode)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"],
+                         f"Bearer {DEBITOPAY_TEST['SECRET_KEY']}")

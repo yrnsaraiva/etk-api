@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Count, Q
 from django.utils import timezone
 
 
@@ -42,8 +43,24 @@ class Event(models.Model):
             self.id = make_id("EVNT")
         super().save(*args, **kwargs)
 
+    @classmethod
+    def with_ticket_counts(cls, queryset=None):
+        """Anota `total_tickets_purchased` numa única consulta (JOIN +
+        COUNT), em vez de uma consulta por evento — usar nas listagens.
+        `total_tickets_purchased` lê o valor anotado quando presente."""
+        from ticketing.models import Ticket
+        qs = cls.objects.all() if queryset is None else queryset
+        return qs.annotate(
+            _total_tickets_purchased_annotated=Count(
+                "prices__tickets", filter=Q(prices__tickets__payment=Ticket.Payment.PAID)
+            )
+        )
+
     @property
     def total_tickets_purchased(self) -> int:
+        annotated = getattr(self, "_total_tickets_purchased_annotated", None)
+        if annotated is not None:
+            return annotated
         from ticketing.models import Ticket
         return Ticket.objects.filter(
             price__event=self, payment=Ticket.Payment.PAID

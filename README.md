@@ -57,6 +57,10 @@ por isso essa string é parte do contrato.
 `/api/events/{id}/tickets/` (dashboard), `/api/prices/{id}/invites/`
 (convites — ver secção própria abaixo).
 
+Estas rotas usam o mesmo envelope `{status, message, data}` das externas
+(a paginação do DRF fica dentro de `data`) — exceto `/api/auth/token/…`,
+que mantém o formato próprio do SimpleJWT (`{access, refresh}`).
+
 ## Correr localmente
 
 ```bash

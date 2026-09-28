@@ -28,7 +28,7 @@ _ALIVE_FOR_DEDUPE = (Ticket.Payment.PENDING, Ticket.Payment.PAID)
 @transaction.atomic
 def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
                   full_name: str = "", email: str = "", payment_method: str = "",
-                  external_reference: str = "") -> Ticket:
+                  external_reference: str = "", test_mode: bool = False) -> Ticket:
     """Emite um bilhete `pending` e reserva o lugar.
 
     `select_for_update()` tranca a linha do Price até ao fim da transação. Sem
@@ -87,6 +87,7 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
         email=email,
         payment_method=payment_method,
         external_reference=external_reference,
+        test_mode=test_mode,
         expires_at=timezone.now() + timedelta(minutes=settings.TICKET_RESERVATION_MINUTES),
     )
 

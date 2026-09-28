@@ -24,13 +24,27 @@ from .exceptions import InvalidSignature, PaymentError
 
 DEBITOPAY_TEST = {
     "BASE_URL": "https://gyqoaningqhurhvdugne.supabase.co/functions/v1",
-    "SECRET_KEY": "sk_sandbox_teste",
-    "WEBHOOK_SECRET": "webhook-secret-teste",
+    "SECRET_KEY": "sk_live_teste",
+    "WEBHOOK_SECRET": "webhook-secret-live-teste",
     "SIGNATURE_HEADER": "X-Webhook-Signature",
     "MERCHANT_ID": "11111111-1111-1111-1111-111111111111",
     "WALLETS": {
         "mpesa": "12345", "emola": "22222", "mkesh": "33333",
         "visa_mastercard": "44444", "payfast": "55555",
+    },
+    "DEFAULT_METHOD": "mpesa",
+    "TIMEOUT": 30,
+}
+
+DEBITOPAY_SANDBOX_TEST = {
+    "BASE_URL": "https://sandbox.example/functions/v1",
+    "SECRET_KEY": "sk_sandbox_teste",
+    "WEBHOOK_SECRET": "webhook-secret-sandbox-teste",
+    "SIGNATURE_HEADER": "X-Webhook-Signature",
+    "MERCHANT_ID": "99999999-9999-9999-9999-999999999999",
+    "WALLETS": {
+        "mpesa": "s-12345", "emola": "s-22222", "mkesh": "s-33333",
+        "visa_mastercard": "s-44444", "payfast": "s-55555",
     },
     "DEFAULT_METHOD": "mpesa",
     "TIMEOUT": 30,
@@ -128,6 +142,53 @@ class CreateChargeTests(TestCase):
                 debitopay._method_for("payfast")
 
 
+@override_settings(DEBITOPAY=DEBITOPAY_TEST, DEBITOPAY_SANDBOX=DEBITOPAY_SANDBOX_TEST)
+class SandboxRoutingTests(TestCase):
+    """Fase 4.2: um bilhete criado com uma chave etk_test_… não pode cobrar
+    de verdade — sandbox=True troca as credenciais e a wallet, sem tocar
+    no resto da lógica."""
+
+    @patch("payments.debitopay.requests.post")
+    def test_sandbox_usa_a_url_e_as_credenciais_da_sandbox(self, post):
+        post.return_value = _resp({
+            "success": True, "payment_id": "pay_sandbox_1", "payment_method": "mpesa",
+            "status": "pending",
+        })
+        debitopay.create_charge(
+            amount=Decimal("150"), currency="MZN", reference="TCKT1",
+            phone="258841234567", method="mpesa", description="", callback_url="",
+            sandbox=True,
+        )
+        called_url = post.call_args.args[0] if post.call_args.args else post.call_args.kwargs["url"]
+        self.assertTrue(called_url.startswith(DEBITOPAY_SANDBOX_TEST["BASE_URL"]))
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"],
+                         f"Bearer {DEBITOPAY_SANDBOX_TEST['SECRET_KEY']}")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["wallet_code"], DEBITOPAY_SANDBOX_TEST["WALLETS"]["mpesa"])
+        self.assertEqual(sent["merchant_id"], DEBITOPAY_SANDBOX_TEST["MERCHANT_ID"])
+
+    @patch("payments.debitopay.requests.post")
+    def test_sem_sandbox_continua_a_usar_a_conta_live(self, post):
+        post.return_value = _resp({
+            "success": True, "payment_id": "pay_live_1", "payment_method": "mpesa",
+            "status": "pending",
+        })
+        debitopay.create_charge(
+            amount=Decimal("150"), currency="MZN", reference="TCKT1",
+            phone="258841234567", method="mpesa", description="", callback_url="",
+        )
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"],
+                         f"Bearer {DEBITOPAY_TEST['SECRET_KEY']}")
+
+    def test_sandbox_sem_wallet_falha_com_a_mensagem_certa(self):
+        vazio = {**DEBITOPAY_SANDBOX_TEST,
+                "WALLETS": {**DEBITOPAY_SANDBOX_TEST["WALLETS"], "payfast": ""}}
+        with override_settings(DEBITOPAY_SANDBOX=vazio):
+            with self.assertRaises(PaymentError) as ctx:
+                debitopay._method_for("payfast", sandbox=True)
+            self.assertIn("DEBITOPAY_SANDBOX_WALLET_PAYFAST", str(ctx.exception))
+
+
 @override_settings(DEBITOPAY=DEBITOPAY_TEST)
 class CheckStatusTests(TestCase):
     @patch("payments.debitopay.requests.post")
@@ -144,7 +205,7 @@ class CheckStatusTests(TestCase):
         self.assertEqual(charge.status, SUCCEEDED)
 
 
-@override_settings(DEBITOPAY=DEBITOPAY_TEST)
+@override_settings(DEBITOPAY=DEBITOPAY_TEST, DEBITOPAY_SANDBOX=DEBITOPAY_SANDBOX_TEST)
 class WebhookTests(TestCase):
     """A assinatura tem de bater com o exemplo Node.js da documentação:
     HMAC-SHA256 em hex, sobre os bytes crus do corpo."""
@@ -179,6 +240,16 @@ class WebhookTests(TestCase):
     def test_assinatura_invalida_e_recusada(self):
         with self.assertRaises(InvalidSignature):
             debitopay.parse_webhook(self.body, {"X-Webhook-Signature": "errada"})
+
+    def test_assinatura_da_sandbox_tambem_e_aceite(self):
+        """Fase 4.2: o mesmo endpoint recebe webhooks das duas contas — um
+        bilhete de teste tem o seu evento assinado com o segredo sandbox,
+        não o live."""
+        sig = hmac.new(
+            DEBITOPAY_SANDBOX_TEST["WEBHOOK_SECRET"].encode(), self.body, hashlib.sha256
+        ).hexdigest()
+        event = debitopay.parse_webhook(self.body, {"X-Webhook-Signature": sig})
+        self.assertEqual(event.charge_reference, "pay_1")
 
     def test_payment_failed_mapeia_para_failed(self):
         payload = {**self.payload, "event": "payment.failed"}

@@ -129,6 +129,21 @@ parceiro filtrar repetidos.
 assim que um `User` tem `webhook_url` e ainda não tem segredo — nunca
 existe a combinação insegura de um webhook sem segredo.
 
+## Chaves de teste (sandbox)
+
+Uma `ApiKey` com `environment=test` (prefixo `etk_test_…`) nunca cobra
+dinheiro real: `Ticket.test_mode` fica `True` na criação (lido de
+`request.auth.environment`, a chave que autenticou o pedido) e
+`start_payment`/`reconcile_pending` passam `sandbox=True` a
+`payments/debitopay.py`, que troca `settings.DEBITOPAY` por
+`settings.DEBITOPAY_SANDBOX` — URL, credenciais, `merchant_id` e carteiras
+todos podem ser diferentes.
+
+O webhook é um único endpoint para as duas contas: `parse_webhook` tenta a
+assinatura com o segredo live e, se não bater, com o da sandbox — por isso
+`DEBITOPAY_SANDBOX_WEBHOOK_SECRET` também tem de estar configurado para os
+eventos da sandbox serem aceites.
+
 ## Testar
 
 ```bash
@@ -162,6 +177,16 @@ DEBITOPAY_WALLET_CARD=...
 DEBITOPAY_WALLET_PAYFAST=...
 DEBITOPAY_DEFAULT_METHOD=mpesa
 PUBLIC_BASE_URL=https://a-sua-api.com
+
+# sandbox (chaves etk_test_…) — por omissão herda BASE_URL/DEFAULT_METHOD da conta live
+DEBITOPAY_SANDBOX_SECRET_KEY=sk_sandbox_...
+DEBITOPAY_SANDBOX_WEBHOOK_SECRET=...
+DEBITOPAY_SANDBOX_MERCHANT_ID=...
+DEBITOPAY_SANDBOX_WALLET_MPESA=...
+DEBITOPAY_SANDBOX_WALLET_EMOLA=...
+DEBITOPAY_SANDBOX_WALLET_MKESH=...
+DEBITOPAY_SANDBOX_WALLET_CARD=...
+DEBITOPAY_SANDBOX_WALLET_PAYFAST=...
 ```
 
 Configure só as carteiras dos métodos que vai mesmo usar; um método sem

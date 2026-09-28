@@ -108,14 +108,15 @@ class GestaoOrganizadorTests(TestCase):
             "province": "Maputo",
         }, format="json")
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertTrue(Event.objects.filter(pk=r.data["id"], organizer=self.org).exists())
+        self.assertEqual(r.data["status"], "success")
+        self.assertTrue(Event.objects.filter(pk=r.data["data"]["id"], organizer=self.org).exists())
 
     def test_nao_ve_eventos_de_outro_organizador(self):
         Event.objects.create(
             organizer=self.outro, name="Alheio", date=timezone.now() + timedelta(days=5)
         )
         r = self.client.get("/api/events/")
-        self.assertEqual(r.data["count"], 0)
+        self.assertEqual(r.data["data"]["count"], 0)
 
     def test_sem_token_e_recusado(self):
         c = APIClient()
@@ -134,8 +135,17 @@ class GestaoOrganizadorTests(TestCase):
     def test_emitir_chave_devolve_valor_em_claro_uma_vez(self):
         r = self.client.post("/api/api-keys/", {"label": "site"}, format="json")
         self.assertEqual(r.status_code, 201)
-        self.assertIn("key", r.data)
-        self.assertTrue(r.data["key"].startswith("etk_"))
+        self.assertIn("key", r.data["data"])
+        self.assertTrue(r.data["data"]["key"].startswith("etk_"))
 
         r2 = self.client.get("/api/api-keys/")
-        self.assertNotIn("key", r2.data["results"][0])
+        self.assertNotIn("key", r2.data["data"]["results"][0])
+
+    def test_respostas_de_gestao_tem_o_mesmo_envelope_das_externas(self):
+        """Fase 4.1: {status, message, data} também nas rotas /api/, não só
+        JSON cru do DRF — um só formato para qualquer painel."""
+        r = self.client.get("/api/events/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["status"], "success")
+        self.assertIn("message", r.data)
+        self.assertIn("results", r.data["data"])   # paginação do DRF, dentro de data
