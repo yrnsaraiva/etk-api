@@ -9,6 +9,7 @@ from ticketing.views import (
     ExternalCheckInView,
     ExternalEventDetailView,
     ExternalEventListView,
+    ExternalInviteCreateView,
     ExternalTicketConfirmView,
     ExternalTicketCreateView,
     ExternalTicketDetailView,
@@ -27,6 +28,7 @@ urlpatterns = [
     # --- API externa: consumida pelos sites parceiros com etk_live_... ---
     path(f"{EXTERNAL}/events", ExternalEventListView.as_view()),
     path(f"{EXTERNAL}/events/<str:event_id>", ExternalEventDetailView.as_view()),
+    path(f"{EXTERNAL}/invites", ExternalInviteCreateView.as_view()),
     path(f"{EXTERNAL}/tickets", ExternalTicketCreateView.as_view()),
     path(f"{EXTERNAL}/tickets/check-in", ExternalCheckInView.as_view()),
     path(f"{EXTERNAL}/tickets/<str:ticket_id>/confirm", ExternalTicketConfirmView.as_view()),

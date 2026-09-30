@@ -17,7 +17,7 @@ from .models import Ticket
 from payments.exceptions import PaymentDeclined, PaymentError
 from payments.services import start_payment
 
-from .services import TicketError, check_in, confirm_preregistration, create_ticket
+from .services import TicketError, check_in, confirm_preregistration, create_ticket, issue_invites
 from django.utils.dateparse import parse_datetime
 
 logger = logging.getLogger(__name__)
@@ -211,6 +211,46 @@ class ExternalTicketDetailView(APIView):
         except Ticket.DoesNotExist:
             return fail("Ticket not found", status.HTTP_404_NOT_FOUND)
         return ok(ticket.to_api(), "Ticket retrieved successfully")
+
+
+class InviteCreateSerializer(serializers.Serializer):
+    priceId = serializers.CharField()
+    eventId = serializers.CharField()
+    quantity = serializers.IntegerField(min_value=1, max_value=500, default=1)
+    holderName = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    holderEmail = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class ExternalInviteCreateView(APIView):
+    """POST /back/borrow/external/invites — emite `quantity` convites gratuitos.
+
+    Mesmo serviço do painel de gestão (`issue_invites`): ocupa vaga do lote,
+    nunca passa pelo gateway e nasce `invited`, pronto para entrar. Só o
+    organizador dono da chave pode convidar para os seus eventos.
+    """
+
+    authentication_classes = EXTERNAL_AUTH
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = InviteCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            tickets = issue_invites(
+                price_id=data["priceId"], event_id=data["eventId"], organizer=request.user,
+                quantity=data["quantity"], holder_name=data.get("holderName", ""),
+                holder_email=data.get("holderEmail", ""), phone=data.get("phone", ""),
+                note=data.get("note", ""),
+            )
+        except TicketError as exc:
+            detail = exc.detail
+            return fail(str(detail[0]) if isinstance(detail, list) and detail else str(detail),
+                        status.HTTP_400_BAD_REQUEST)
+        return ok([t.to_api() for t in tickets], "Invites created successfully",
+                  status.HTTP_201_CREATED)
 
 
 class TicketConfirmSerializer(serializers.Serializer):
