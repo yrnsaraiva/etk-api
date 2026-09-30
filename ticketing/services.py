@@ -77,7 +77,7 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
     if price.available - 1 <= 0:
         Price.objects.filter(pk=price.pk).update(status=Price.Status.SOLD_OUT)
 
-    return Ticket.objects.create(
+    ticket = Ticket.objects.create(
         price=price,
         amount=price.amount,          # congelado aqui
         currency=price.currency,
@@ -90,6 +90,12 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
         test_mode=test_mode,
         expires_at=timezone.now() + timedelta(minutes=settings.TICKET_RESERVATION_MINUTES),
     )
+
+    # Preço 0 MT: não há nada a cobrar, por isso nunca passa pelo gateway.
+    # Confirma logo (paid) — a vaga já está reservada acima.
+    if ticket.amount <= 0:
+        return confirm_payment(ticket, provider="free", provider_reference=ticket.id)
+    return ticket
 
 
 @transaction.atomic
