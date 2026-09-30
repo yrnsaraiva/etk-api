@@ -32,6 +32,12 @@ class Event(models.Model):
     location_details = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
 
+    # Nem todos os eventos têm camisetes: só quando `True` o site do parceiro
+    # pede o tamanho na inscrição e o mostra no bilhete/listas.
+    offers_shirts = models.BooleanField(
+        default=False, help_text="O evento tem camisetes (o participante escolhe o tamanho)."
+    )
+
     class RegistrationMode(models.TextChoices):
         DIRECT = "direct", "Inscrição directa (compra/pagamento)"
         PREREGISTRATION = "preregistration", "Pré-inscrição + confirmação de presença"
@@ -119,6 +125,7 @@ class Event(models.Model):
             "date": self.date.isoformat().replace("+00:00", "Z"),
             "imageUrl": self.image_url,
             "status": self.status,
+            "offersShirts": self.offers_shirts,
             "registrationMode": self.registration_mode,
             "confirmationOpensAt": (
                 self.confirmation_opens_at.isoformat().replace("+00:00", "Z")

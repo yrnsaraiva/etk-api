@@ -12,7 +12,7 @@ class PriceInline(admin.TabularInline):
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "organizer", "date", "status", "registration_mode",
-                    "total_tickets_purchased")
+                    "offers_shirts", "total_tickets_purchased")
     list_filter = ("status", "registration_mode", "category", "province")
     search_fields = ("id", "name")
     inlines = [PriceInline]
