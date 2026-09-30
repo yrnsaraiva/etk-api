@@ -108,6 +108,28 @@ class ReservaTests(Base):
         self.assertEqual(expire_stale_tickets(), 0)
 
 
+class CamisetesTests(Base):
+    def test_evento_expoe_se_tem_camisetes(self):
+        self.assertFalse(self.event.to_api()["offersShirts"])        # por omissão não tem
+        self.event.offers_shirts = True
+        self.event.save()
+        self.assertTrue(self.event.to_api()["offersShirts"])
+
+    def test_bilhete_leva_a_flag_no_evento(self):
+        t = self.emitir()
+        self.assertFalse(t.to_api()["event"]["offersShirts"])
+        self.event.offers_shirts = True
+        self.event.save()
+        t = Ticket.objects.select_related("price__event").get(pk=t.pk)
+        self.assertTrue(t.to_api()["event"]["offersShirts"])
+
+    def test_evento_externo_lista_a_flag(self):
+        self.event.offers_shirts = True
+        self.event.save()
+        r = self.client.get("/back/borrow/external/events")
+        self.assertTrue(r.json()["data"][0]["offersShirts"])
+
+
 class ConvitesExternosTests(Base):
     url = "/back/borrow/external/invites"
 

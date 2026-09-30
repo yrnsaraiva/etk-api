@@ -125,6 +125,7 @@ class Ticket(models.Model):
                 "category": event.category,
                 "date": event.date.isoformat().replace("+00:00", "Z"),
                 "imageUrl": event.image_url,
+                "offersShirts": event.offers_shirts,
                 "location": {"province": event.province, "details": event.location_details},
             },
             "priceId": self.price_id,
