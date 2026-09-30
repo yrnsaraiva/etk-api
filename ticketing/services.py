@@ -22,7 +22,11 @@ class TicketError(ValidationError):
 # Estados em que um ticket antigo com o mesmo external_reference ainda
 # "conta" como o mesmo pedido em curso. FAILED/REFUNDED já libertaram a vaga
 # e não bloqueiam um pedido novo.
-_ALIVE_FOR_DEDUPE = (Ticket.Payment.PENDING, Ticket.Payment.PAID)
+_ALIVE_FOR_DEDUPE = (
+    Ticket.Payment.PENDING, Ticket.Payment.PAID, Ticket.Payment.PREREGISTERED,
+)
+# Estados em que o bilhete ocupa uma vaga que ainda pode ser libertada.
+_HOLDING_SPOT = (Ticket.Payment.PENDING, Ticket.Payment.PREREGISTERED)
 
 
 @transaction.atomic
@@ -73,9 +77,26 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
             "Bilhetes esgotados." if price.available == 0 else "Este preço não está à venda."
         )
 
+    event = price.event
+    if event.is_preregistration:
+        if price.amount > 0:
+            raise TicketError("A pré-inscrição só está disponível para bilhetes gratuitos.")
+        if event.confirmation_deadline and event.confirmation_deadline <= timezone.now():
+            raise TicketError("O prazo de pré-inscrição terminou.")
+
     Price.objects.filter(pk=price.pk).update(quantity_reserved=F("quantity_reserved") + 1)
     if price.available - 1 <= 0:
         Price.objects.filter(pk=price.pk).update(status=Price.Status.SOLD_OUT)
+
+    if event.is_preregistration:
+        # Reserva a vaga até ao prazo; nunca passa pelo gateway.
+        return Ticket.objects.create(
+            price=price, amount=price.amount, currency=price.currency,
+            issued_to=issued_to, phone=phone, full_name=full_name, email=email,
+            payment_method=payment_method, external_reference=external_reference,
+            test_mode=test_mode, payment=Ticket.Payment.PREREGISTERED,
+            expires_at=event.confirmation_deadline,
+        )
 
     ticket = Ticket.objects.create(
         price=price,
@@ -124,6 +145,47 @@ def confirm_payment(ticket: Ticket, *, provider: str, provider_reference: str,
     return ticket
 
 
+def confirm_preregistration(ticket: Ticket, *, phone: str) -> Ticket:
+    """O participante confirma presença: `preregistered` → `paid` (gratuito).
+
+    `phone` tem de ser o do bilhete — o telefone é a única credencial da
+    confirmação, e um mesmo telefone pode ter vários bilhetes (cada um é
+    confirmado à parte). Idempotente: confirmar um bilhete já confirmado
+    devolve-o tal como está. Passado o prazo, liberta a vaga e recusa.
+    """
+    ticket, expirou = _confirm_preregistration_tx(ticket, phone)
+    if expirou:
+        # Fora da transação: levantar dentro dela desfaria a libertação da vaga.
+        raise TicketError("O prazo de confirmação terminou; a vaga foi libertada.")
+    return ticket
+
+
+@transaction.atomic
+def _confirm_preregistration_tx(ticket: Ticket, phone: str) -> tuple[Ticket, bool]:
+    ticket = Ticket.objects.select_for_update().select_related("price").get(pk=ticket.pk)
+
+    if ticket.phone != phone:
+        # Mesma resposta de "não existe": não revela bilhetes de outros telefones.
+        raise Ticket.DoesNotExist
+    if ticket.payment == Ticket.Payment.PAID and ticket.amount <= 0:
+        return ticket, False
+    if ticket.payment != Ticket.Payment.PREREGISTERED:
+        raise TicketError(f"Bilhete em estado '{ticket.payment}'.")
+    if ticket.expires_at and ticket.expires_at < timezone.now():
+        return release(ticket, Ticket.Payment.FAILED), True
+
+    PaymentAttempt.objects.create(
+        ticket=ticket, provider="preregistration", provider_reference=ticket.id,
+        amount=ticket.amount, succeeded=True, raw_payload={},
+    )
+    ticket.payment = Ticket.Payment.PAID
+    ticket.paid_at = timezone.now()
+    ticket.expires_at = None
+    ticket.save(update_fields=["payment", "paid_at", "expires_at", "updated_at"])
+    notify_partner(ticket)
+    return ticket, False
+
+
 @transaction.atomic
 def reclaim_and_confirm(ticket: Ticket, *, provider: str, provider_reference: str,
                         payload: dict | None = None) -> Ticket:
@@ -170,7 +232,7 @@ def reclaim_and_confirm(ticket: Ticket, *, provider: str, provider_reference: st
 def release(ticket: Ticket, payment_status: str) -> Ticket:
     """Devolve a vaga ao lote."""
     ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
-    if ticket.payment != Ticket.Payment.PENDING:
+    if ticket.payment not in _HOLDING_SPOT:
         return ticket
     Price.objects.filter(pk=ticket.price_id).update(
         quantity_reserved=F("quantity_reserved") - 1
@@ -270,7 +332,7 @@ def issue_invites(*, price_id: str, event_id: str, organizer, quantity: int = 1,
 def expire_stale_tickets() -> int:
     """Correr a cada minuto (cron / Celery beat) para libertar vagas não pagas."""
     stale = Ticket.objects.filter(
-        payment=Ticket.Payment.PENDING, expires_at__lt=timezone.now()
+        payment__in=_HOLDING_SPOT, expires_at__lt=timezone.now()
     )
     count = 0
     for ticket in stale:

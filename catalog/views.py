@@ -53,7 +53,8 @@ class EventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = ("id", "name", "description", "category", "date", "image_url", "province",
-                  "location_details", "status", "prices", "total_tickets_purchased", "created_at")
+                  "location_details", "status", "registration_mode", "confirmation_deadline",
+                  "prices", "total_tickets_purchased", "created_at")
         read_only_fields = ("id", "created_at")
 
 
@@ -79,6 +80,7 @@ class EventViewSet(GestaoViewSet):
             "count": qs.count(),
             "paid": qs.filter(payment=Ticket.Payment.PAID).count(),
             "invited": qs.filter(payment=Ticket.Payment.INVITED).count(),
+            "preregistered": qs.filter(payment=Ticket.Payment.PREREGISTERED).count(),
             "entered": qs.filter(entered=True).count(),
             "results": [t.to_api() for t in qs[:200]],
         }, "Tickets retrieved successfully")

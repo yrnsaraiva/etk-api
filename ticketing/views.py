@@ -17,7 +17,7 @@ from .models import Ticket
 from payments.exceptions import PaymentDeclined, PaymentError
 from payments.services import start_payment
 
-from .services import check_in, create_ticket
+from .services import TicketError, check_in, confirm_preregistration, create_ticket
 from django.utils.dateparse import parse_datetime
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,11 @@ class ExternalTicketCreateView(APIView):
         if payment:
             tickets = tickets.filter(payment=payment)
 
+        # Um telefone pode ter vários bilhetes: devolve todos.
+        phone = request.query_params.get("phone")
+        if phone:
+            tickets = tickets.filter(phone=phone)
+
         since = request.query_params.get("since")
         if since:
             parsed = parse_datetime(since)
@@ -133,6 +138,15 @@ class ExternalTicketCreateView(APIView):
                 payload["paymentInstructions"] = "Bilhete gratuito — nenhum pagamento necessário."
                 return ok(payload, "Ticket created successfully", status.HTTP_201_CREATED)
 
+            # Pré-inscrição: só reservou a vaga; a confirmação é feita à parte.
+            if ticket.payment == Ticket.Payment.PREREGISTERED:
+                ticket.refresh_from_db()
+                payload = ticket.to_api()
+                payload["paymentInstructions"] = (
+                    "Pré-inscrição registada. Confirme a sua presença até ao prazo."
+                )
+                return ok(payload, "Ticket pre-registered successfully", status.HTTP_201_CREATED)
+
             # Ticket já existia (mesmo externalReference) e já tem pagamento
             # em curso ou concluído — não iniciar outra cobrança em cima dele.
             if ticket.provider_charge_id or ticket.payment == Ticket.Payment.PAID:
@@ -164,6 +178,12 @@ class ExternalTicketCreateView(APIView):
                     status.HTTP_502_BAD_GATEWAY,
                     data={"ticketId": ticket.id},
                 )
+        except TicketError as exc:
+            # Regra de negócio (esgotado, prazo terminou, priceId inválido...):
+            # é um erro do pedido, não um erro interno.
+            detail = exc.detail
+            message = str(detail[0]) if isinstance(detail, list) and detail else str(detail)
+            return fail(message, status.HTTP_400_BAD_REQUEST)
         except Exception:
             logger.exception("erro inesperado ao criar ticket/iniciar pagamento")
             return fail(
@@ -191,6 +211,35 @@ class ExternalTicketDetailView(APIView):
         except Ticket.DoesNotExist:
             return fail("Ticket not found", status.HTTP_404_NOT_FOUND)
         return ok(ticket.to_api(), "Ticket retrieved successfully")
+
+
+class TicketConfirmSerializer(serializers.Serializer):
+    phone = serializers.RegexField(r"^258\d{9}$")
+
+
+class ExternalTicketConfirmView(APIView):
+    """POST /back/borrow/external/tickets/{ticketId}/confirm — body: {"phone": "258…"}
+
+    Confirma a presença de uma pré-inscrição. O telefone tem de coincidir com
+    o do bilhete; caso contrário responde 404 como se o bilhete não existisse.
+    """
+
+    authentication_classes = EXTERNAL_AUTH
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, ticket_id):
+        serializer = TicketConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            ticket = Ticket.objects.get(pk=ticket_id, issued_to=request.user)
+            ticket = confirm_preregistration(ticket, phone=serializer.validated_data["phone"])
+        except Ticket.DoesNotExist:
+            return fail("Ticket not found", status.HTTP_404_NOT_FOUND)
+        except TicketError as exc:
+            return fail(str(exc.detail[0]) if isinstance(exc.detail, list) else str(exc.detail),
+                        status.HTTP_409_CONFLICT)
+        ticket = Ticket.objects.select_related("price__event").get(pk=ticket.pk)
+        return ok(ticket.to_api(), "Ticket confirmed successfully")
 
 
 class ExternalCheckInView(APIView):
