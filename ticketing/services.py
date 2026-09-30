@@ -162,7 +162,7 @@ def confirm_preregistration(ticket: Ticket, *, phone: str) -> Ticket:
 
 @transaction.atomic
 def _confirm_preregistration_tx(ticket: Ticket, phone: str) -> tuple[Ticket, bool]:
-    ticket = Ticket.objects.select_for_update().select_related("price").get(pk=ticket.pk)
+    ticket = Ticket.objects.select_for_update().select_related("price__event").get(pk=ticket.pk)
 
     if ticket.phone != phone:
         # Mesma resposta de "não existe": não revela bilhetes de outros telefones.
@@ -173,6 +173,8 @@ def _confirm_preregistration_tx(ticket: Ticket, phone: str) -> tuple[Ticket, boo
         raise TicketError(f"Bilhete em estado '{ticket.payment}'.")
     if ticket.expires_at and ticket.expires_at < timezone.now():
         return release(ticket, Ticket.Payment.FAILED), True
+    if not ticket.price.event.confirmation_is_open():
+        raise TicketError("A confirmação de presença ainda não está aberta.")
 
     PaymentAttempt.objects.create(
         ticket=ticket, provider="preregistration", provider_reference=ticket.id,
