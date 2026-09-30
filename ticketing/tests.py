@@ -108,6 +108,53 @@ class ReservaTests(Base):
         self.assertEqual(expire_stale_tickets(), 0)
 
 
+class ConvitesExternosTests(Base):
+    url = "/back/borrow/external/invites"
+
+    def post(self, **extra):
+        body = {"priceId": self.price.id, "eventId": self.event.id, "quantity": 2,
+                "holderName": "Patrocinador", "holderEmail": "p@x.co", "phone": "258841111111",
+                "note": "Coca-Cola", **extra}
+        return self.client.post(self.url, body, format="json")
+
+    def test_emite_convites_gratuitos_que_entram(self):
+        r = self.post()
+        self.assertEqual(r.status_code, 201, r.content)
+        dados = r.json()["data"]
+        self.assertEqual(len(dados), 2)
+        self.assertTrue(all(t["isInvite"] and t["payment"] == "invited" for t in dados))
+        self.assertEqual({t["note"] for t in dados}, {"Coca-Cola"})
+        self.assertEqual(len({t["id"] for t in dados}), 2)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 2)            # ocupam vaga
+        result, _, _ = check_in(qr_value=dados[0]["qrValue"], staff_user=self.org)
+        self.assertEqual(result, "ok")
+
+    def test_nao_ultrapassa_a_capacidade(self):
+        r = self.post(quantity=3)                                     # lote de 2
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("2", r.json()["message"])
+        self.assertFalse(Ticket.objects.exists())
+
+    def test_organizador_alheio_nao_convida(self):
+        outro = User.objects.create_user("outro", email="o@t.local", password="Pa$$w0rd!123")
+        _, raw = ApiKey.issue(outro)
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {raw}")
+        r = c.post(self.url, {"priceId": self.price.id, "eventId": self.event.id}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Ticket.objects.exists())
+
+    def test_exige_chave_de_api(self):
+        r = APIClient().post(self.url, {"priceId": self.price.id, "eventId": self.event.id},
+                             format="json")
+        self.assertIn(r.status_code, (401, 403))
+
+    def test_dados_invalidos(self):
+        self.assertEqual(self.post(quantity=0).status_code, 400)
+        self.assertEqual(self.post(holderEmail="nao-e-email").status_code, 400)
+
+
 class PreInscricaoTests(Base):
     """Evento em modo pré-inscrição: reserva vaga, confirma-se depois."""
 
