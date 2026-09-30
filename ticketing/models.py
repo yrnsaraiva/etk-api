@@ -85,9 +85,15 @@ class Ticket(models.Model):
             # external_reference para price_ids diferentes — nesse caso é um
             # erro do lado do parceiro, e o segundo pedido falha com 500 em
             # vez de silenciosamente criar dois tickets.
+            #
+            # Só cobre tickets "vivos" (pending/paid), tal como o dedupe em
+            # create_ticket(): um ticket failed/expired/refunded/review já
+            # libertou a vaga e não pode bloquear um novo pedido do parceiro
+            # com a mesma referência (senão o retry dava 500).
             models.UniqueConstraint(
                 fields=["issued_to", "external_reference"],
-                condition=~models.Q(external_reference=""),
+                condition=~models.Q(external_reference="")
+                & models.Q(payment__in=["pending", "paid"]),
                 name="uniq_ticket_partner_external_reference",
             ),
         ]
