@@ -10,7 +10,7 @@ from catalog.models import Event, Price
 from partners.models import ApiKey, User
 from ticketing.models import PartnerDelivery, Ticket
 from ticketing.services import (
-    TicketError, check_in, confirm_payment, create_ticket,
+    TicketError, check_in, confirm_payment, confirm_preregistration, create_ticket,
     expire_stale_tickets, parse_qr, reclaim_and_confirm, refund, release,
 )
 from ticketing.webhooks import deliver_pending_webhooks
@@ -106,6 +106,145 @@ class ReservaTests(Base):
             expires_at=timezone.now() - timedelta(minutes=1)
         )
         self.assertEqual(expire_stale_tickets(), 0)
+
+
+class PreInscricaoTests(Base):
+    """Evento em modo pré-inscrição: reserva vaga, confirma-se depois."""
+
+    def setUp(self):
+        super().setUp()
+        self.event.registration_mode = Event.RegistrationMode.PREREGISTRATION
+        self.event.confirmation_deadline = timezone.now() + timedelta(days=5)
+        self.event.save()
+        self.price.amount = Decimal("0.00")
+        self.price.quantity_total = 5
+        self.price.save()
+
+    def pre(self, phone="258841111111", ref=""):
+        return create_ticket(price_id=self.price.id, event_id=self.event.id,
+                             phone=phone, issued_to=self.org, external_reference=ref)
+
+    def post(self, ref, phone="258841111111"):
+        return self.client.post("/back/borrow/external/tickets", {
+            "priceId": self.price.id, "eventId": self.event.id, "phone": phone,
+            "externalReference": ref,
+        }, format="json")
+
+    def test_pre_inscricao_reserva_vaga_sem_gateway(self):
+        with patch("ticketing.views.start_payment") as gateway:
+            r = self.post("r1")
+        self.assertEqual(r.status_code, 201, r.content)
+        gateway.assert_not_called()
+        t = Ticket.objects.get()
+        self.assertEqual(t.payment, Ticket.Payment.PREREGISTERED)
+        self.assertEqual(t.expires_at, self.event.confirmation_deadline)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 1)
+
+    def test_repetir_pedido_nao_duplica(self):
+        with patch("ticketing.views.start_payment") as gateway:
+            self.post("r1")
+            r = self.post("r1")
+        self.assertEqual(r.status_code, 201)
+        gateway.assert_not_called()
+        self.assertEqual(Ticket.objects.count(), 1)
+
+    def test_bilhete_expoe_prazo_da_reserva(self):
+        t = self.pre()
+        self.assertEqual(t.to_api()["expiresAt"],
+                         self.event.confirmation_deadline.isoformat().replace("+00:00", "Z"))
+        confirm_preregistration(t, phone=t.phone)
+        t.refresh_from_db()
+        self.assertIsNone(t.to_api()["expiresAt"])
+
+    def test_pre_inscrito_nao_entra(self):
+        t = self.pre()
+        result, _, _ = check_in(qr_value=t.qr_value, staff_user=self.org)
+        self.assertEqual(result, "not_paid")
+
+    def test_telefone_com_varios_bilhetes_lista_e_confirma_cada_um(self):
+        a, b = self.pre(ref="a"), self.pre(ref="b")
+        outro = self.pre(phone="258842222222", ref="c")
+        r = self.client.get("/back/borrow/external/tickets", {
+            "phone": "258841111111", "payment": "preregistered", "eventId": self.event.id})
+        ids = {t["id"] for t in r.json()["data"]}
+        self.assertEqual(ids, {a.id, b.id})
+
+        confirm_preregistration(a, phone="258841111111")
+        a.refresh_from_db(); b.refresh_from_db(); outro.refresh_from_db()
+        self.assertEqual(a.payment, Ticket.Payment.PAID)
+        self.assertEqual(b.payment, Ticket.Payment.PREREGISTERED)
+        self.assertEqual(outro.payment, Ticket.Payment.PREREGISTERED)
+        result, _, _ = check_in(qr_value=a.qr_value, staff_user=self.org)
+        self.assertEqual(result, "ok")
+
+    def test_confirmar_com_telefone_errado_da_404(self):
+        t = self.pre()
+        r = self.client.post(f"/back/borrow/external/tickets/{t.id}/confirm",
+                             {"phone": "258849999999"}, format="json")
+        self.assertEqual(r.status_code, 404)
+        t.refresh_from_db()
+        self.assertEqual(t.payment, Ticket.Payment.PREREGISTERED)
+
+    def test_confirmar_via_api_e_idempotente(self):
+        t = self.pre()
+        url = f"/back/borrow/external/tickets/{t.id}/confirm"
+        for _ in range(2):
+            r = self.client.post(url, {"phone": t.phone}, format="json")
+            self.assertEqual(r.status_code, 200, r.content)
+            self.assertEqual(r.json()["data"]["payment"], "paid")
+        self.assertEqual(t.attempts.count(), 1)
+
+    def test_confirmar_depois_do_prazo_liberta_a_vaga(self):
+        t = self.pre()
+        Ticket.objects.filter(pk=t.pk).update(expires_at=timezone.now() - timedelta(minutes=1))
+        r = self.client.post(f"/back/borrow/external/tickets/{t.id}/confirm",
+                             {"phone": t.phone}, format="json")
+        self.assertEqual(r.status_code, 409)
+        t.refresh_from_db()
+        self.assertEqual(t.payment, Ticket.Payment.FAILED)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 0)
+
+    def test_expiracao_liberta_pre_inscricoes_por_confirmar(self):
+        a, b = self.pre(ref="a"), self.pre(ref="b")
+        confirm_preregistration(a, phone=a.phone)
+        Ticket.objects.filter(pk=b.pk).update(expires_at=timezone.now() - timedelta(minutes=1))
+        self.assertEqual(expire_stale_tickets(), 1)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 1)   # só o confirmado
+
+    def test_prazo_terminado_recusa_nova_pre_inscricao(self):
+        self.event.confirmation_deadline = timezone.now() - timedelta(minutes=1)
+        self.event.save()
+        r = self.post("r1")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Ticket.objects.exists())
+
+    def test_preco_pago_nao_admite_pre_inscricao(self):
+        self.price.amount = Decimal("100.00")
+        self.price.save()
+        r = self.post("r1")
+        self.assertEqual(r.status_code, 400)
+
+    def test_nao_ultrapassa_a_capacidade(self):
+        self.price.quantity_total = 1
+        self.price.save()
+        self.pre(ref="a")
+        r = self.post("b", phone="258842222222")
+        self.assertEqual(r.status_code, 400)
+
+    def test_evento_direto_continua_igual(self):
+        self.event.registration_mode = Event.RegistrationMode.DIRECT
+        self.event.save()
+        self.price.amount = Decimal("300.00")
+        self.price.save()
+        self.assertEqual(self.emitir().payment, Ticket.Payment.PENDING)
+
+    def test_evento_expoe_modo_e_prazo(self):
+        d = self.event.to_api()
+        self.assertEqual(d["registrationMode"], "preregistration")
+        self.assertTrue(d["confirmationDeadline"].endswith("Z"))
 
 
 class ReferenciaExternaTests(Base):

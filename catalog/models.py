@@ -31,12 +31,31 @@ class Event(models.Model):
     province = models.CharField(max_length=60, blank=True)
     location_details = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+
+    class RegistrationMode(models.TextChoices):
+        DIRECT = "direct", "Inscrição directa (compra/pagamento)"
+        PREREGISTRATION = "preregistration", "Pré-inscrição + confirmação de presença"
+
+    # Em `preregistration` o pedido de bilhete só reserva a vaga (estado
+    # `preregistered`, sem gateway); o participante confirma presença até
+    # `confirmation_deadline`, senão a vaga é libertada. Só para preço 0.
+    registration_mode = models.CharField(
+        max_length=20, choices=RegistrationMode.choices, default=RegistrationMode.DIRECT
+    )
+    confirmation_deadline = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Limite para confirmar presença (só em pré-inscrição).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["date"]
         indexes = [models.Index(fields=["status", "date"])]
+
+    @property
+    def is_preregistration(self) -> bool:
+        return self.registration_mode == self.RegistrationMode.PREREGISTRATION
 
     def save(self, *args, **kwargs):
         if not self.id:
@@ -76,6 +95,11 @@ class Event(models.Model):
             "date": self.date.isoformat().replace("+00:00", "Z"),
             "imageUrl": self.image_url,
             "status": self.status,
+            "registrationMode": self.registration_mode,
+            "confirmationDeadline": (
+                self.confirmation_deadline.isoformat().replace("+00:00", "Z")
+                if self.confirmation_deadline else None
+            ),
             "location": {"province": self.province, "details": self.location_details},
             "prices": [p.to_api() for p in self.prices.all()],
             "totalTicketsPurchased": self.total_tickets_purchased,
