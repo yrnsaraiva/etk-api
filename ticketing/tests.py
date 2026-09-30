@@ -149,6 +149,14 @@ class PreInscricaoTests(Base):
         gateway.assert_not_called()
         self.assertEqual(Ticket.objects.count(), 1)
 
+    def test_bilhete_expoe_prazo_da_reserva(self):
+        t = self.pre()
+        self.assertEqual(t.to_api()["expiresAt"],
+                         self.event.confirmation_deadline.isoformat().replace("+00:00", "Z"))
+        confirm_preregistration(t, phone=t.phone)
+        t.refresh_from_db()
+        self.assertIsNone(t.to_api()["expiresAt"])
+
     def test_pre_inscrito_nao_entra(self):
         t = self.pre()
         result, _, _ = check_in(qr_value=t.qr_value, staff_user=self.org)

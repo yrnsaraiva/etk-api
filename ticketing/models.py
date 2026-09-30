@@ -140,6 +140,10 @@ class Ticket(models.Model):
             "status": self.status,
             "payment": self.payment,
             "paymentMethod": self.payment_method,
+            # Limite da reserva (pagamento pendente ou pré-inscrição por confirmar).
+            "expiresAt": (
+                self.expires_at.isoformat().replace("+00:00", "Z") if self.expires_at else None
+            ),
             "checkoutUrl": self.checkout_url,
             "entered": self.entered,
             "qrValue": self.qr_value,
