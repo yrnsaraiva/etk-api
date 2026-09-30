@@ -108,6 +108,18 @@ class ReservaTests(Base):
         self.assertEqual(expire_stale_tickets(), 0)
 
 
+class ReferenciaExternaTests(Base):
+    def test_reenvio_depois_de_expirar_cria_novo_ticket(self):
+        """Ticket failed com a mesma externalReference não bloqueia o retry."""
+        kw = dict(price_id=self.price.id, event_id=self.event.id,
+                  phone="258841111111", issued_to=self.org, external_reference="ref-1")
+        antigo = create_ticket(**kw)
+        release(antigo, Ticket.Payment.FAILED)
+        novo = create_ticket(**kw)
+        self.assertNotEqual(novo.id, antigo.id)
+        self.assertEqual(novo.payment, Ticket.Payment.PENDING)
+
+
 class BilheteGratuitoTests(Base):
     def test_preco_zero_nao_passa_pelo_gateway(self):
         from unittest import mock
