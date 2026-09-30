@@ -9,6 +9,7 @@ from ticketing.views import (
     ExternalCheckInView,
     ExternalEventDetailView,
     ExternalEventListView,
+    ExternalTicketConfirmView,
     ExternalTicketCreateView,
     ExternalTicketDetailView,
 )
@@ -28,6 +29,7 @@ urlpatterns = [
     path(f"{EXTERNAL}/events/<str:event_id>", ExternalEventDetailView.as_view()),
     path(f"{EXTERNAL}/tickets", ExternalTicketCreateView.as_view()),
     path(f"{EXTERNAL}/tickets/check-in", ExternalCheckInView.as_view()),
+    path(f"{EXTERNAL}/tickets/<str:ticket_id>/confirm", ExternalTicketConfirmView.as_view()),
     path(f"{EXTERNAL}/tickets/<str:ticket_id>", ExternalTicketDetailView.as_view()),
     path("back/payments/webhooks/debitopay", debitopay_webhook),
 
