@@ -126,6 +126,13 @@ class ExternalTicketCreateView(APIView):
                 test_mode=(getattr(request.auth, "environment", None) == ApiKey.Environment.TEST),
             )
 
+            # Bilhete gratuito (0 MT): já nasce pago, sem passar pelo gateway.
+            if ticket.amount <= 0 and ticket.payment == Ticket.Payment.PAID:
+                ticket.refresh_from_db()
+                payload = ticket.to_api()
+                payload["paymentInstructions"] = "Bilhete gratuito — nenhum pagamento necessário."
+                return ok(payload, "Ticket created successfully", status.HTTP_201_CREATED)
+
             # Ticket já existia (mesmo externalReference) e já tem pagamento
             # em curso ou concluído — não iniciar outra cobrança em cima dele.
             if ticket.provider_charge_id or ticket.payment == Ticket.Payment.PAID:

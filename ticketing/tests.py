@@ -108,6 +108,23 @@ class ReservaTests(Base):
         self.assertEqual(expire_stale_tickets(), 0)
 
 
+class BilheteGratuitoTests(Base):
+    def test_preco_zero_nao_passa_pelo_gateway(self):
+        from unittest import mock
+        self.price.amount = Decimal("0.00")
+        self.price.save()
+        with mock.patch("ticketing.views.start_payment") as gateway:
+            r = self.client.post("/back/borrow/external/tickets", {
+                "priceId": self.price.id, "eventId": self.event.id,
+                "phone": "258841111111",
+            }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        gateway.assert_not_called()
+        t = Ticket.objects.get()
+        self.assertEqual(t.payment, Ticket.Payment.PAID)
+        self.assertIsNotNone(t.paid_at)
+
+
 class PagamentoTests(Base):
     def test_confirmar_marca_pago(self):
         t = confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
