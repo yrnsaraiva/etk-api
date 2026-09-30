@@ -42,9 +42,15 @@ class Event(models.Model):
     registration_mode = models.CharField(
         max_length=20, choices=RegistrationMode.choices, default=RegistrationMode.DIRECT
     )
+    confirmation_opens_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Quando a confirmação de presença abre. Vazio = ainda fechada "
+                  "(a organização decide quando abrir, ex.: 2 dias antes do evento).",
+    )
     confirmation_deadline = models.DateTimeField(
         null=True, blank=True,
-        help_text="Limite para confirmar presença (só em pré-inscrição).",
+        help_text="Limite para confirmar presença (só em pré-inscrição); "
+                  "as vagas não confirmadas são libertadas nesse momento.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -56,6 +62,24 @@ class Event(models.Model):
     @property
     def is_preregistration(self) -> bool:
         return self.registration_mode == self.RegistrationMode.PREREGISTRATION
+
+    def confirmation_is_open(self, now=None) -> bool:
+        """A confirmação de presença só existe depois de a organização a abrir
+        (`confirmation_opens_at`) e antes do prazo."""
+        now = now or timezone.now()
+        if not self.is_preregistration or not self.confirmation_opens_at:
+            return False
+        if now < self.confirmation_opens_at:
+            return False
+        return not (self.confirmation_deadline and now >= self.confirmation_deadline)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if (self.confirmation_opens_at and self.confirmation_deadline
+                and self.confirmation_opens_at >= self.confirmation_deadline):
+            raise ValidationError(
+                "A confirmação tem de abrir antes do prazo de confirmação."
+            )
 
     def save(self, *args, **kwargs):
         if not self.id:
@@ -96,6 +120,11 @@ class Event(models.Model):
             "imageUrl": self.image_url,
             "status": self.status,
             "registrationMode": self.registration_mode,
+            "confirmationOpensAt": (
+                self.confirmation_opens_at.isoformat().replace("+00:00", "Z")
+                if self.confirmation_opens_at else None
+            ),
+            "confirmationOpen": self.confirmation_is_open(),
             "confirmationDeadline": (
                 self.confirmation_deadline.isoformat().replace("+00:00", "Z")
                 if self.confirmation_deadline else None

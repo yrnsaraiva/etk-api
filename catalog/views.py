@@ -53,7 +53,8 @@ class EventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = ("id", "name", "description", "category", "date", "image_url", "province",
-                  "location_details", "status", "registration_mode", "confirmation_deadline",
+                  "location_details", "status", "registration_mode", "confirmation_opens_at",
+                  "confirmation_deadline",
                   "prices", "total_tickets_purchased", "created_at")
         read_only_fields = ("id", "created_at")
 

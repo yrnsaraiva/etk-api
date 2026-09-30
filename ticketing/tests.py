@@ -115,6 +115,8 @@ class PreInscricaoTests(Base):
         super().setUp()
         self.event.registration_mode = Event.RegistrationMode.PREREGISTRATION
         self.event.confirmation_deadline = timezone.now() + timedelta(days=5)
+        # A organização abriu a confirmação (por omissão fica fechada).
+        self.event.confirmation_opens_at = timezone.now() - timedelta(hours=1)
         self.event.save()
         self.price.amount = Decimal("0.00")
         self.price.quantity_total = 5
@@ -156,6 +158,41 @@ class PreInscricaoTests(Base):
         confirm_preregistration(t, phone=t.phone)
         t.refresh_from_db()
         self.assertIsNone(t.to_api()["expiresAt"])
+
+    def test_confirmacao_fechada_ate_a_organizacao_abrir(self):
+        t = self.pre()
+        url = f"/back/borrow/external/tickets/{t.id}/confirm"
+        for opens in (None, timezone.now() + timedelta(days=1)):
+            self.event.confirmation_opens_at = opens
+            self.event.save()
+            r = self.client.post(url, {"phone": t.phone}, format="json")
+            self.assertEqual(r.status_code, 409, r.content)
+            t.refresh_from_db()
+            self.assertEqual(t.payment, Ticket.Payment.PREREGISTERED)
+            self.price.refresh_from_db()
+            self.assertEqual(self.price.quantity_reserved, 1)      # vaga mantida
+        self.event.confirmation_opens_at = timezone.now() - timedelta(minutes=1)
+        self.event.save()
+        self.assertEqual(self.client.post(url, {"phone": t.phone}, format="json").status_code, 200)
+
+    def test_pre_inscricao_continua_aberta_com_confirmacao_fechada(self):
+        self.event.confirmation_opens_at = None
+        self.event.save()
+        self.assertEqual(self.post("r1").status_code, 201)
+
+    def test_abertura_tem_de_ser_antes_do_prazo(self):
+        from django.core.exceptions import ValidationError
+        self.event.confirmation_opens_at = self.event.confirmation_deadline
+        with self.assertRaises(ValidationError):
+            self.event.clean()
+
+    def test_evento_expoe_abertura(self):
+        d = self.event.to_api()
+        self.assertTrue(d["confirmationOpen"])
+        self.assertTrue(d["confirmationOpensAt"].endswith("Z"))
+        self.event.confirmation_opens_at = None
+        self.assertFalse(self.event.to_api()["confirmationOpen"])
+        self.assertIsNone(self.event.to_api()["confirmationOpensAt"])
 
     def test_pre_inscrito_nao_entra(self):
         t = self.pre()
