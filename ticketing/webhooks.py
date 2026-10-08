@@ -39,13 +39,16 @@ def sign(body: bytes, secret: str) -> str:
 def notify_partner(ticket, event_name: str = PartnerDelivery.Event.TICKET_PAID) -> None:
     owner = ticket.issued_to
 
-    if not owner.webhook_url:
+    targets = owner.webhook_endpoints_to_notify()
+    if not targets:
         logger.info("Ticket %s: parceiro não possui webhook configurado.", ticket.id)
         return
 
-    PartnerDelivery.objects.create(
-        ticket=ticket, event=event_name, payload=ticket.to_api(),
-    )
+    # Uma entrega por destino: cada um tem o seu id, o seu segredo e a sua espera entre tentativas
+    for endpoint in targets:
+        PartnerDelivery.objects.create(
+            ticket=ticket, event=event_name, payload=ticket.to_api(), endpoint=endpoint,
+        )
 
 
 def deliver_pending_webhooks() -> dict:
@@ -61,7 +64,7 @@ def deliver_pending_webhooks() -> dict:
 
     pendentes = PartnerDelivery.objects.filter(
         delivered_at__isnull=True, gave_up_at__isnull=True, next_attempt_at__lte=now,
-    ).select_related("ticket__issued_to")
+    ).select_related("ticket__issued_to", "endpoint")
 
     for entrega in pendentes:
         if now - entrega.created_at > GIVE_UP_AFTER:
@@ -81,21 +84,37 @@ def deliver_pending_webhooks() -> dict:
     return stats
 
 
-def _deliver_one(entrega: PartnerDelivery, now) -> bool:
+def _target(entrega: PartnerDelivery):
+    """(url, segredo) do destino, ou None se já não existe/está desligado (o aviso foi enfileirado antes)."""
+    if entrega.endpoint_id:
+        ep = entrega.endpoint
+        return (ep.url, ep.secret) if ep.is_active and ep.url else None
     owner = entrega.ticket.issued_to
+    return (owner.webhook_url, owner.webhook_secret) if owner.webhook_url else None
+
+
+def _deliver_one(entrega: PartnerDelivery, now) -> bool:
+    target = _target(entrega)
+    if target is None:
+        entrega.gave_up_at = now
+        entrega.last_error = "destino removido ou desligado"
+        entrega.save(update_fields=["gave_up_at", "last_error"])
+        logger.warning("aviso #%s: destino já não está activo, descartado", entrega.pk)
+        return False
+    url, secret = target
     body = json.dumps(
         {"event": entrega.event, "data": entrega.payload}, separators=(",", ":")
     ).encode()
     headers = {
         "Content-Type": "application/json",
-        "X-ETK-Signature": sign(body, owner.webhook_secret or ""),
+        "X-ETK-Signature": sign(body, secret or ""),
         "X-ETK-Event": entrega.event,
         "X-ETK-Delivery-ID": str(entrega.pk),
     }
 
     erro = ""
     try:
-        response = requests.post(owner.webhook_url, data=body, headers=headers, timeout=(3, 30))
+        response = requests.post(url, data=body, headers=headers, timeout=(3, 30))
         ok = 200 <= response.status_code < 300
         if not ok:
             erro = f"HTTP {response.status_code}: {response.text[:200]}"

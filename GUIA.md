@@ -295,7 +295,10 @@ if data["data"]["payment"] != "paid":
 ```
 
 Melhor ainda: registe o webhook do parceiro (campo `webhook_url` no seu
-utilizador organizador) e deixe a API avisar quando cada bilhete é pago ou
+utilizador organizador; para **mais de um destino** — por exemplo o site e a
+app de membros — acrescente-os como «Webhook endpoints» no mesmo utilizador,
+no admin; cada um tem o seu segredo e a sua fila, e um destino em baixo não
+atrasa os outros) e deixe a API avisar quando cada bilhete é pago ou
 reembolsado. O aviso é entregue por um cron a correr a cada minuto (ver
 Passo 8), por isso não chega no mesmo instante da confirmação — se o
 scanner precisar de saber logo, continue a sondar `GET /tickets/{id}`.

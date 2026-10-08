@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.models import Event, Price
-from partners.models import ApiKey, User
+from partners.models import ApiKey, User, WebhookEndpoint
 from ticketing.models import PartnerDelivery, Ticket
 from ticketing.services import (
     TicketError, check_in, confirm_payment, confirm_preregistration, create_ticket,
@@ -747,3 +747,105 @@ class FilaDeAvisosTests(Base):
         entregas = list(PartnerDelivery.objects.filter(ticket=t).order_by("created_at"))
         self.assertEqual([e.event for e in entregas], ["ticket.paid", "ticket.refunded"])
         self.assertNotEqual(entregas[0].pk, entregas[1].pk)
+
+
+class VariosDestinosTests(Base):
+    """O organizador pode ter o webhook_url antigo e mais destinos: cada um recebe o mesmo aviso, assinado com o seu
+    segredo, com o seu id de entrega e a sua fila de tentativas."""
+
+    def setUp(self):
+        super().setUp()
+        self.org.webhook_url = "https://site.example/webhook"
+        self.org.webhook_secret = "segredo-do-site"
+        self.org.save()
+        self.app = WebhookEndpoint.objects.create(
+            owner=self.org, label="App de membros", url="https://app.example/webhooks/etk/", secret="segredo-da-app"
+        )
+
+    def pago(self):
+        return confirm_payment(self.emitir(), provider="fake", provider_reference="ref1")
+
+    def test_um_aviso_por_destino(self):
+        t = self.pago()
+        entregas = PartnerDelivery.objects.filter(ticket=t).order_by("pk")
+        self.assertEqual([e.endpoint_id for e in entregas], [None, self.app.pk])
+
+    def test_cada_destino_recebe_o_mesmo_corpo_com_o_seu_segredo(self):
+        import hashlib
+        import hmac
+
+        with patch("ticketing.webhooks.requests.post") as post:
+            post.return_value = _resp(200)
+            self.pago()
+            stats = deliver_pending_webhooks()
+        self.assertEqual(stats["entregues"], 2)
+        enviados = {c.args[0]: c.kwargs for c in post.call_args_list}
+        self.assertEqual(set(enviados), {"https://site.example/webhook", "https://app.example/webhooks/etk/"})
+        corpo_site = enviados["https://site.example/webhook"]["data"]
+        corpo_app = enviados["https://app.example/webhooks/etk/"]["data"]
+        self.assertEqual(corpo_site, corpo_app)
+        for url, segredo in (("https://site.example/webhook", "segredo-do-site"),
+                             ("https://app.example/webhooks/etk/", "segredo-da-app")):
+            esperado = hmac.new(segredo.encode(), enviados[url]["data"], hashlib.sha256).hexdigest()
+            self.assertEqual(enviados[url]["headers"]["X-ETK-Signature"], esperado)
+        ids = {kw["headers"]["X-ETK-Delivery-ID"] for kw in enviados.values()}
+        self.assertEqual(len(ids), 2)  # cada destino filtra repetidos pelo seu id
+
+    def test_destino_em_baixo_nao_atrasa_nem_repete_os_outros(self):
+        def so_o_site_responde(url, **kw):
+            return _resp(200) if "site.example" in url else _resp(500)
+
+        with patch("ticketing.webhooks.requests.post", side_effect=so_o_site_responde) as post:
+            t = self.pago()
+            stats = deliver_pending_webhooks()
+            self.assertEqual((stats["entregues"], stats["falharam"]), (1, 1))
+            site, app = PartnerDelivery.objects.filter(ticket=t).order_by("pk")
+            self.assertIsNotNone(site.delivered_at)
+            self.assertIsNone(app.delivered_at)
+            self.assertEqual(app.attempts, 1)
+            # a próxima ronda não volta a enviar ao site (já entregue) nem à app (ainda em espera)
+            deliver_pending_webhooks()
+            self.assertEqual(post.call_count, 2)
+            # passada a espera, só a app é tentada outra vez
+            PartnerDelivery.objects.filter(pk=app.pk).update(next_attempt_at=timezone.now())
+            deliver_pending_webhooks()
+            self.assertEqual(post.call_count, 3)
+            self.assertIn("app.example", post.call_args.args[0])
+
+    def test_destino_desligado_nao_recebe_novos_avisos(self):
+        self.app.is_active = False
+        self.app.save()
+        t = self.pago()
+        self.assertEqual(list(PartnerDelivery.objects.filter(ticket=t).values_list("endpoint_id", flat=True)), [None])
+
+    def test_destino_desligado_depois_de_enfileirar_desiste_sem_pedido(self):
+        t = self.pago()
+        WebhookEndpoint.objects.filter(pk=self.app.pk).update(is_active=False)
+        with patch("ticketing.webhooks.requests.post") as post:
+            post.return_value = _resp(200)
+            stats = deliver_pending_webhooks()
+        self.assertEqual(post.call_count, 1)  # só o site
+        self.assertEqual(stats["entregues"], 1)
+        app = PartnerDelivery.objects.get(ticket=t, endpoint=self.app)
+        self.assertIsNotNone(app.gave_up_at)
+        self.assertEqual(app.last_error, "destino removido ou desligado")
+
+    def test_apagar_o_destino_apaga_as_entregas_pendentes(self):
+        t = self.pago()
+        self.app.delete()
+        self.assertEqual(PartnerDelivery.objects.filter(ticket=t).count(), 1)
+
+    def test_so_destinos_novos_sem_webhook_url(self):
+        self.org.webhook_url = ""
+        self.org.save()
+        t = self.pago()
+        self.assertEqual(list(PartnerDelivery.objects.filter(ticket=t).values_list("endpoint_id", flat=True)), [self.app.pk])
+        with patch("ticketing.webhooks.requests.post") as post:
+            post.return_value = _resp(200)
+            self.assertEqual(deliver_pending_webhooks()["entregues"], 1)
+
+    def test_reembolso_avisa_todos_os_destinos(self):
+        t = self.pago()
+        refund(t)
+        refunds = PartnerDelivery.objects.filter(ticket=t, event="ticket.refunded")
+        self.assertEqual(refunds.count(), 2)

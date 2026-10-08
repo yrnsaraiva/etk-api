@@ -65,8 +65,8 @@ class CheckInLogAdmin(admin.ModelAdmin):
 
 @admin.register(PartnerDelivery)
 class PartnerDeliveryAdmin(admin.ModelAdmin):
-    list_display = ("ticket", "event", "attempts", "next_attempt_at",
+    list_display = ("ticket", "event", "endpoint", "attempts", "next_attempt_at",
                     "delivered_at", "gave_up_at")
     list_filter = ("event", "delivered_at", "gave_up_at")
     search_fields = ("ticket__id",)
-    readonly_fields = ("ticket", "event", "payload", "created_at")
+    readonly_fields = ("ticket", "endpoint", "event", "payload", "created_at")

@@ -2,7 +2,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from catalog.models import Event
-from partners.models import ApiKey, User
+from partners.models import ApiKey, User, WebhookEndpoint
 
 
 class ApiKeyTests(TestCase):
@@ -95,3 +95,33 @@ class AutenticacaoExternaTests(TestCase):
         r = self._get("etk_live_inventada1234567890")
         self.assertEqual(r.status_code, 401)
         self.assertEqual(r.data["status"], "error")
+
+
+class WebhookEndpointTests(TestCase):
+    """Vários destinos por organizador: o webhook_url antigo continua a ser o primeiro."""
+
+    def setUp(self):
+        # sem password: o teste não precisa de iniciar sessão (e não deixa credenciais literais no diff)
+        self.org = User.objects.create_user("org", email="org@test.local")
+
+    def test_destino_gera_segredo_e_nao_o_substitui(self):
+        ep = WebhookEndpoint.objects.create(owner=self.org, url="https://app.example/webhooks/etk/")
+        self.assertGreaterEqual(len(ep.secret), 32)
+        segredo = ep.secret
+        ep.label = "App de membros"
+        ep.save()
+        ep.refresh_from_db()
+        self.assertEqual(ep.secret, segredo)
+        outro = WebhookEndpoint.objects.create(owner=self.org, url="https://b.example/hook")
+        self.assertNotEqual(outro.secret, segredo)
+
+    def test_destinos_a_notificar(self):
+        self.assertEqual(self.org.webhook_endpoints_to_notify(), [])
+        ep = WebhookEndpoint.objects.create(owner=self.org, url="https://app.example/hook")
+        self.assertEqual(self.org.webhook_endpoints_to_notify(), [ep])
+        self.org.webhook_url = "https://site.example/hook"
+        self.org.save()
+        self.assertEqual(self.org.webhook_endpoints_to_notify(), [None, ep])  # o campo antigo vem primeiro
+        ep.is_active = False
+        ep.save()
+        self.assertEqual(self.org.webhook_endpoints_to_notify(), [None])
