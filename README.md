@@ -136,3 +136,16 @@ números de receita.
   aparece uma única vez, na resposta ao `POST /api/api-keys/`.
 - Três tarefas agendadas mantêm o sistema consistente — ver
   `GUIA.md` (Passo 8) e `docs/pagamentos.md`.
+
+## Avisos ao parceiro (webhooks)
+
+Quando um bilhete é pago ou reembolsado a API enfileira um aviso (`PartnerDelivery`) e o comando
+`python manage.py deliver_webhooks` (cron, a cada minuto) entrega-o com `POST {"event": "ticket.paid" | "ticket.refunded",
+"data": <bilhete>}`, assinado em `X-ETK-Signature` (HMAC-SHA256 em hex do corpo cru) e com `X-ETK-Delivery-ID`
+para o recetor filtrar repetidos. Falhas repetem-se com espera crescente (1, 5, 15, 60 min) durante 1 dia.
+
+**Vários destinos por organizador.** O campo `webhook_url` do utilizador continua a ser o primeiro destino. Os restantes
+são `WebhookEndpoint` (admin → utilizador → «Webhook endpoints»): cada um com `url`, segredo próprio (gerado ao gravar),
+interruptor `is_active`, e a sua entrega independente (id, assinatura e tentativas próprios). Desligar ou apagar um destino
+descarta os avisos que ele ainda tinha por entregar.
+

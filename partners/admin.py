@@ -1,11 +1,19 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import ApiKey, User
+from .models import ApiKey, User, WebhookEndpoint
+
+
+class WebhookEndpointInline(admin.TabularInline):
+    model = WebhookEndpoint
+    extra = 0
+    fields = ("label", "url", "is_active", "secret")
+    readonly_fields = ("secret",)  # gerado ao gravar; o parceiro valida X-ETK-Signature com ele
 
 
 @admin.register(User)
 class PartnerUserAdmin(UserAdmin):
+    inlines = [WebhookEndpointInline]
     list_display = ("username", "email", "company_name", "is_staff")
     fieldsets = UserAdmin.fieldsets + (
         ("Parceiro", {

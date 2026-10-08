@@ -199,6 +199,11 @@ class PartnerDelivery(models.Model):
         TICKET_REFUNDED = "ticket.refunded", "Bilhete reembolsado"
 
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="partner_deliveries")
+    # Destino: um WebhookEndpoint, ou `None` para o webhook_url do próprio organizador (o destino original).
+    # Cada destino tem a sua linha, por isso repetições e desistência são independentes.
+    endpoint = models.ForeignKey(
+        "partners.WebhookEndpoint", null=True, blank=True, on_delete=models.CASCADE, related_name="deliveries"
+    )
     event = models.CharField(max_length=30, choices=Event.choices)
     payload = models.JSONField(default=dict, blank=True)
     attempts = models.PositiveIntegerField(default=0)
