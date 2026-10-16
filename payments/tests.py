@@ -43,7 +43,7 @@ IMALIWAY_TEST = {
     "STORE_ACCOUNT_NUMBER": "260000079",
     "WEBHOOK_SECRET": "whs_live_teste",
     "DEFAULT_METHOD": "mpesa",
-    "PUSH_EXPIRATION_MINUTES": 5,
+    "PUSH_EXPIRATION_MINUTES": 0,
     "TIMEOUT": 30,
 }
 IMALIWAY_SANDBOX_TEST = {
@@ -54,7 +54,7 @@ IMALIWAY_SANDBOX_TEST = {
     "STORE_ACCOUNT_NUMBER": "290000001",
     "WEBHOOK_SECRET": "whs_sandbox_teste",
     "DEFAULT_METHOD": "mpesa",
-    "PUSH_EXPIRATION_MINUTES": 5,
+    "PUSH_EXPIRATION_MINUTES": 0,
     "TIMEOUT": 30,
 }
 
@@ -72,7 +72,7 @@ def _created(method, url, **kwargs):
     sent = kwargs["json"]
     return _resp({"data": {
         "transaction_id": "EML26D7ALOJ7", "partner_transaction_id": sent["partner_transaction_id"],
-        "amount": str(sent["amount"]), "expiration_datetime": sent["expiration_datetime"],
+        "amount": str(sent["amount"]), "expiration_datetime": sent.get("expiration_datetime", "2026-10-20 11:02:51"),
         "status": "PENDING"}})
 
 
@@ -150,12 +150,16 @@ class CobrancaTests(Base):
         self.assertEqual(args, ("POST", "https://gateway.test/api/partners/imaliway/v2/payments"))
         sent = kwargs["json"]
         self.assertEqual(sent["client_account_number"], "841111111")       # 9 dígitos, sem 258
-        self.assertEqual(sent["amount"], 300.0)
+        self.assertEqual(sent["amount"], 300)
+        self.assertIsInstance(sent["amount"], int)                         # 300 e não 300.0
         self.assertEqual(sent["store_account_number"], "260000079")
         self.assertEqual(sent["partner_transaction_id"], t.provider_charge_id)
         self.assertEqual(sent["payment_method"], "emola")
         self.assertEqual((sent["payment_type"], sent["transaction_type"]), ("push", "C2B"))
-        self.assertRegex(sent["expiration_datetime"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        # como no exemplo de teste da Paytek: sem expiration_datetime, vale o padrão (2 min)
+        self.assertNotIn("expiration_datetime", sent)
+        # nem chegar a ligar deve falhar depressa: (ligar, ler)
+        self.assertEqual(self.last_request.kwargs["timeout"], (10, 30))
 
     def test_authorization_leva_a_api_key_cifrada_com_a_chave_publica(self):
         self.comprar()
@@ -173,11 +177,13 @@ class CobrancaTests(Base):
             self.assertEqual(_RSA.decrypt(base64.b64decode(token), padding.PKCS1v15()),
                              b"api-key-live-teste")
 
-    def test_o_push_nunca_expira_depois_da_reserva(self):
+    @override_settings(IMALIWAY={**IMALIWAY_TEST, "PUSH_EXPIRATION_MINUTES": 5})
+    def test_expiracao_opcional_nunca_passa_da_reserva(self):
         t = self.comprar()
         from datetime import datetime
         from zoneinfo import ZoneInfo
         sent = self.last_request.kwargs["json"]["expiration_datetime"]
+        self.assertRegex(sent, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         limit = datetime.strptime(sent, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Africa/Maputo"))
         self.assertLessEqual(limit, t.expires_at + timedelta(seconds=1))
         self.assertLessEqual(limit, timezone.now() + timedelta(minutes=5, seconds=2))
@@ -296,6 +302,24 @@ class AdaptadorTests(SimpleTestCase):
                 self.charge()
         self.assertIn("payment_method", str(ctx.exception))
 
+    def test_valor_json_inteiro_ou_decimal(self):
+        self.assertEqual(imaliway._json_amount(Decimal("10")), 10)
+        self.assertIsInstance(imaliway._json_amount(Decimal("10.00")), int)
+        self.assertEqual(imaliway._json_amount(Decimal("12.5")), 12.5)
+        self.assertEqual(imaliway._json_amount(Decimal("299.99")), 299.99)
+
+    def test_sem_ligar_a_mensagem_aponta_para_a_whitelist_de_ip(self):
+        for exc in (requests.ConnectTimeout("t"), requests.ConnectionError("c")):
+            with patch("payments.imaliway.requests.request", side_effect=exc):
+                with self.assertRaises(ProviderUnavailable) as ctx:
+                    self.charge()
+            self.assertIn("whitelist", str(ctx.exception))
+            self.assertIn("check_imaliway", str(ctx.exception))
+        with patch("payments.imaliway.requests.request", side_effect=requests.ReadTimeout("r")):
+            with self.assertRaises(ProviderUnavailable) as ctx:
+                self.charge()
+        self.assertNotIn("whitelist", str(ctx.exception))      # lido mas lento: não é problema de IP
+
     def test_resposta_ilegivel_e_falha_de_transporte(self):
         bad = Mock(ok=True, status_code=200)
         bad.json.side_effect = ValueError("html")
@@ -318,8 +342,10 @@ class AdaptadorTests(SimpleTestCase):
         with patch("payments.imaliway.requests.request", return_value=_status("EXPIRED", "REF")) as net:
             charge = imaliway.fetch_charge("REFREFREFREF")
         self.assertEqual(net.call_args.args[0], "GET")
-        self.assertEqual(net.call_args.kwargs["params"],
-                         {"payment_type": "push", "partner_transaction_id": "REFREFREFREF"})
+        query = {"payment_type": "push", "partner_transaction_id": "REFREFREFREF"}
+        self.assertEqual(net.call_args.kwargs["params"], query)
+        # o exemplo de teste da Paytek manda-os no corpo JSON do GET: vão nos dois sítios
+        self.assertEqual(net.call_args.kwargs["json"], query)
         self.assertEqual(charge.status, imaliway.FAILED)                     # expirou = não pagou
         self.assertIsNone(charge.amount)                                     # a consulta não devolve o valor
         for raw, expected in (("SUCCESS", "succeeded"), ("PENDING", "pending"), ("FAILED", "failed")):
@@ -602,3 +628,83 @@ class ChaveDeTesteTests(Base):
         resp = self.enviar(body, secret=IMALIWAY_SANDBOX_TEST["WEBHOOK_SECRET"])
         t.refresh_from_db()
         self.assertEqual((resp.status_code, t.payment), (200, Ticket.Payment.PAID))
+
+
+@override_settings(IMALIWAY=IMALIWAY_TEST, IMALIWAY_SANDBOX=IMALIWAY_SANDBOX_TEST)
+class CheckImaliwayTests(SimpleTestCase):
+    """O comando de diagnóstico, sem rede."""
+
+    CMD = "payments.management.commands.check_imaliway"
+
+    def run_cmd(self, *args, ip="203.0.113.7", tcp=None, request=None):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        ip_resp = Mock(text=ip)
+        with patch(f"{self.CMD}.requests.get", return_value=ip_resp) as get, \
+             patch(f"{self.CMD}.socket.create_connection", **({"side_effect": tcp} if tcp else {})), \
+             patch("payments.imaliway.requests.request",
+                   **({"side_effect": request} if request else {"return_value": _resp(
+                       {"message_cod": 404, "message": "Invalid order"}, status=404)})) as net:
+            call_command("check_imaliway", *args, stdout=out)
+        return out.getvalue(), net, get
+
+    def test_tudo_certo_mostra_o_ip_e_aceita_as_credenciais(self):
+        out, net, _ = self.run_cmd()
+        self.assertIn("203.0.113.7", out)
+        self.assertIn("whitelist", out)
+        self.assertIn("Credenciais aceites", out)
+        self.assertIn("SANDBOX", out)
+        self.assertEqual(net.call_args.args[0], "GET")                      # só leitura
+
+    def test_nunca_imprime_segredos(self):
+        out, _, _ = self.run_cmd()
+        for secret in ("api-key-sandbox-teste", "whs_sandbox_teste", "BEGIN PUBLIC KEY"):
+            self.assertNotIn(secret, out)
+
+    def test_timeout_na_ligacao_diz_que_e_o_ip_e_nao_testa_credenciais(self):
+        import socket
+        out, net, _ = self.run_cmd(tcp=socket.timeout())
+        self.assertIn("firewall", out)
+        self.assertIn("Sem ligação", out)
+        net.assert_not_called()
+
+    def test_ligacao_recusada(self):
+        out, net, _ = self.run_cmd(tcp=ConnectionRefusedError())
+        self.assertIn("recusada", out)
+        net.assert_not_called()
+
+    def test_configuracao_em_falta_e_listada_sem_chamar_a_rede(self):
+        with override_settings(IMALIWAY_SANDBOX={**IMALIWAY_SANDBOX_TEST, "API_KEY": ""}):
+            out, net, _ = self.run_cmd()
+        self.assertIn("IMALIWAY_SANDBOX_API_KEY em falta", out)
+        net.assert_not_called()
+
+    def test_token_invalido_explica_o_provavel_problema(self):
+        out, _, _ = self.run_cmd(request=lambda *a, **k: _resp(
+            {"message_cod": 500, "message": "Invalid token"}, status=500))
+        self.assertIn("privateKey", out)
+
+    def test_consulta_de_estado(self):
+        respostas = [_resp({"message_cod": 404}, status=404), _status("SUCCESS", "X")]
+        out, net, _ = self.run_cmd("--status", "ABCDEFGHIJKL", request=respostas)
+        self.assertIn("succeeded", out)
+
+    def test_pagamento_de_teste_cria_push_na_sandbox(self):
+        def reply(method, url, **kw):
+            if method == "POST":
+                return _created(method, url, **kw)
+            return _resp({"message_cod": 404}, status=404)
+        out, net, _ = self.run_cmd("--pay", "841234567", "--amount", "10", request=reply)
+        posts = [c for c in net.call_args_list if c.args[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0].args[1].startswith("https://sandbox.test/"))
+        self.assertEqual(posts[0].kwargs["json"]["client_account_number"], "841234567")
+        self.assertEqual(posts[0].kwargs["json"]["amount"], 10)
+        self.assertIn("Push criado", out)
+        self.assertIn("--status", out)
+
+    def test_pagamento_live_exige_confirmacao_explicita(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            self.run_cmd("--live", "--pay", "841234567")
