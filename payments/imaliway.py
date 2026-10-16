@@ -164,11 +164,18 @@ def _request(method: str, path: str, *, sandbox: bool = False, json_body=None, p
     cfg = _cfg(sandbox)
     url = f"{cfg['BASE_URL'].rstrip('/')}{path}"
     try:
+        # (ligar, ler): sem resposta à ligação em poucos segundos é quase sempre
+        # firewall/IP não autorizado — não vale a pena prender um worker 60 s.
         resp = requests.request(method, url, headers=_headers(sandbox), json=json_body,
-                                params=params, timeout=cfg.get("TIMEOUT", 60))
+                                params=params,
+                                timeout=(cfg.get("CONNECT_TIMEOUT", 10), cfg.get("TIMEOUT", 60)))
     except requests.RequestException as exc:
         # Nunca chegou resposta — transporte, não negócio. Retryable.
-        raise ProviderUnavailable(f"iMali.Way inacessível: {exc}") from exc
+        hint = ""
+        if isinstance(exc, (requests.ConnectTimeout, requests.ConnectionError)):
+            hint = (" — não foi possível ligar: confirme que o IP de saída deste servidor está "
+                    "na whitelist da Paytek (python manage.py check_imaliway mostra qual é)")
+        raise ProviderUnavailable(f"iMali.Way inacessível: {exc}{hint}") from exc
 
     try:
         body = resp.json()
@@ -240,15 +247,26 @@ def _local_number(phone: str | None) -> str:
     return digits
 
 
-def _expiration(expires_at, sandbox: bool) -> str:
+def _expiration(expires_at, sandbox: bool) -> str | None:
     """Limite do push, na hora de Maputo, como a API exige (Y-m-d H:i:s).
 
-    Nunca depois de a reserva do bilhete expirar, e nunca mais de PUSH_EXPIRATION_MINUTES.
+    Só se envia quando IMALIWAY_PUSH_EXPIRATION_MINUTES > 0; por omissão não
+    vai nada e vale o padrão da iMali.Way (2 minutos), que é o que o exemplo de
+    teste da Paytek usa. Quando enviado, nunca passa da reserva do bilhete.
     """
-    limit = timezone.now() + timedelta(minutes=_cfg(sandbox).get("PUSH_EXPIRATION_MINUTES", 5))
+    minutes = _cfg(sandbox).get("PUSH_EXPIRATION_MINUTES", 0)
+    if not minutes or minutes <= 0:
+        return None
+    limit = timezone.now() + timedelta(minutes=minutes)
     if expires_at and expires_at < limit:
         limit = expires_at
     return limit.astimezone(_MAPUTO).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _json_amount(amount: Decimal):
+    """10 e não 10.0 quando o valor é inteiro (como no exemplo da Paytek)."""
+    amount = amount.quantize(Decimal("0.01"))
+    return int(amount) if amount == amount.to_integral_value() else float(amount)
 
 
 def _to_charge(data: dict, *, reference: str = "") -> Charge:
@@ -288,14 +306,16 @@ def create_charge(*, amount, currency, reference, phone, method, description=Non
     pid = partner_transaction_id(reference)
     payload = {
         "client_account_number": _local_number(phone),
-        "amount": float(amount.quantize(Decimal("0.01"))),
+        "amount": _json_amount(amount),
         "store_account_number": str(_need(cfg, "STORE_ACCOUNT_NUMBER", prefix + "STORE_ACCOUNT_NUMBER")),
         "partner_transaction_id": pid,
         "payment_method": _method_for(method, sandbox=sandbox),
         "payment_type": "push",
         "transaction_type": "C2B",
-        "expiration_datetime": _expiration(expires_at, sandbox),
     }
+    expiration = _expiration(expires_at, sandbox)
+    if expiration:
+        payload["expiration_datetime"] = expiration
 
     try:
         body = _request("POST", "/payments", sandbox=sandbox, json_body=payload)
@@ -313,8 +333,10 @@ def fetch_charge(reference: str, *, sandbox: bool = False) -> Charge:
 
     A consulta só devolve estado e tempo restante — não o valor.
     """
-    body = _request("GET", "/payments/status", sandbox=sandbox,
-                    params={"payment_type": "push", "partner_transaction_id": reference})
+    # A documentação mostra estes campos como corpo e como parâmetros de URL, e o
+    # exemplo de teste da Paytek manda-os no corpo JSON do GET: vão nos dois.
+    query = {"payment_type": "push", "partner_transaction_id": reference}
+    body = _request("GET", "/payments/status", sandbox=sandbox, params=query, json_body=query)
     data = dict(body["data"])
     data.setdefault("partner_transaction_id", reference)
     return _to_charge(data, reference=reference)

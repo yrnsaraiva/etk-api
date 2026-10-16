@@ -32,12 +32,14 @@ uma chave nova por pedido (`imaliway.private_key()`).
 | `partner_transaction_id` | exatamente 12 caracteres alfanuméricos |
 | `payment_method` | `mpesa` · `emola` · `mkesh` · `imali` |
 | `payment_type` / `transaction_type` | `push` / `C2B` |
-| `expiration_datetime` | `Y-m-d H:i:s` (opcional; por omissão 2 minutos) |
+| `expiration_datetime` | `Y-m-d H:i:s` (opcional; por omissão 2 minutos — **não enviamos**, como no exemplo de teste da Paytek) |
 
 O estado inicial é sempre `PENDING`: o cliente aprova no telemóvel. **Não há
 confirmação síncrona** (a Debito Pay tinha-a para o M-Pesa).
 
-**Estado** — `GET /payments/status?payment_type=push&partner_transaction_id=…`
+**Estado** — `GET /payments/status` com `payment_type=push` e
+`partner_transaction_id` (enviados como parâmetros **e** no corpo JSON, porque a
+documentação mostra as duas formas e o exemplo de teste da Paytek usa o corpo)
 devolve `PENDING | SUCCESS | FAILED | EXPIRED` e o tempo restante, **sem o
 valor**. `EXPIRED` conta como falhado: a vaga volta.
 
@@ -65,7 +67,7 @@ Tudo por variáveis de ambiente — **nunca no repositório**:
 | `IMALIWAY_WEBHOOK_SECRET` | `webhook_secret` |
 | `IMALIWAY_BASE_URL` | opcional; por omissão o URL acima |
 | `IMALIWAY_DEFAULT_METHOD` | opcional; `mpesa` |
-| `IMALIWAY_PUSH_EXPIRATION_MINUTES` | opcional; `5` (nunca passa da reserva do bilhete) |
+| `IMALIWAY_PUSH_EXPIRATION_MINUTES` | opcional; `0` = não enviar e vale o padrão da iMali.Way (2 min). Se > 0, nunca passa da reserva do bilhete |
 | `IMALIWAY_SANDBOX_*` | as mesmas, para chaves `etk_test_…` |
 
 Duas coisas fora do código, combinadas com a Paytek:
@@ -74,6 +76,33 @@ Duas coisas fora do código, combinadas com a Paytek:
    de saída do servidor da API (no Railway, é preciso um IP de saída fixo).
    Enquanto não estiver registado, a ligação é cortada.
 2. **URL do webhook.** Dar à Paytek `https://<API>/back/payments/webhooks/imaliway`.
+
+## Diagnóstico: `check_imaliway`
+
+Quando os pagamentos falham, corra **no servidor** (é o IP dele que conta):
+
+```bash
+python manage.py check_imaliway                    # IP de saída, porta, credenciais (só leitura)
+python manage.py check_imaliway --status REF       # estado de uma cobrança
+python manage.py check_imaliway --pay 841234567    # push de teste na sandbox (mín. 10 MT)
+```
+
+Diz, por ordem: (1) o **IP de saída** — o que a Paytek tem de pôr na whitelist;
+(2) se a ligação à porta abre; (3) se as credenciais são aceites. Nunca imprime
+segredos. `--live` usa as credenciais live; com `--pay` exige
+`--confirmar-dinheiro-real`.
+
+Como ler os erros:
+
+| sintoma | causa provável |
+|---|---|
+| `ConnectTimeout` / "timeout ao ligar" | IP de saída **não autorizado** (a firewall descarta os pacotes). Dar o IP do passo 1 à Paytek |
+| "ligação recusada" / reset | porta bloqueada, ou IP não autorizado |
+| `500 Invalid token` | `api_key`/`publicKey` do ambiente errado, ou formato da `privateKey` |
+| `404` na consulta de teste | normal: a credencial foi aceite (a cobrança "DIAGNOSTICO" não existe) |
+
+A ligação falha depressa de propósito (10 s para ligar, 60 s para ler), para um
+gateway inacessível não prender os workers.
 
 ## Arquitetura
 

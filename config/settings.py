@@ -108,10 +108,12 @@ IMALIWAY = {
     "STORE_ACCOUNT_NUMBER": os.getenv("IMALIWAY_STORE_ACCOUNT_NUMBER", ""),   # conta STORE (9 dígitos)
     "WEBHOOK_SECRET": os.getenv("IMALIWAY_WEBHOOK_SECRET", ""),
     "DEFAULT_METHOD": os.getenv("IMALIWAY_DEFAULT_METHOD", "mpesa"),
-    # Tempo que o cliente tem para aprovar o push (a API assume 2 minutos se nada
-    # for enviado). Nunca ultrapassa a reserva do bilhete.
-    "PUSH_EXPIRATION_MINUTES": int(os.getenv("IMALIWAY_PUSH_EXPIRATION_MINUTES", "5")),
-    "TIMEOUT": 60,
+    # Tempo que o cliente tem para aprovar o push. 0 = não enviar, e vale o padrão
+    # da iMali.Way (2 minutos), como no exemplo de teste da Paytek. Se > 0, nunca
+    # ultrapassa a reserva do bilhete.
+    "PUSH_EXPIRATION_MINUTES": int(os.getenv("IMALIWAY_PUSH_EXPIRATION_MINUTES", "0")),
+    "CONNECT_TIMEOUT": 10,      # segundos para abrir a ligação
+    "TIMEOUT": 60,              # segundos à espera da resposta
 }
 # Chaves de teste (`etk_test_…`) cobram na sandbox da iMali.Way, nunca na conta live.
 # A documentação não lista um endereço separado: só as credenciais mudam.
@@ -124,6 +126,7 @@ IMALIWAY_SANDBOX = {
     "WEBHOOK_SECRET": os.getenv("IMALIWAY_SANDBOX_WEBHOOK_SECRET", ""),
     "DEFAULT_METHOD": os.getenv("IMALIWAY_SANDBOX_DEFAULT_METHOD", IMALIWAY["DEFAULT_METHOD"]),
     "PUSH_EXPIRATION_MINUTES": IMALIWAY["PUSH_EXPIRATION_MINUTES"],
+    "CONNECT_TIMEOUT": IMALIWAY["CONNECT_TIMEOUT"],
     "TIMEOUT": IMALIWAY["TIMEOUT"],
 }
 # Já não viaja no pedido ao gateway (o URL do webhook é registado na Paytek):
