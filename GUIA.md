@@ -49,7 +49,7 @@ python manage.py runserver 8901
 ```
 
 O `seed_demo` imprime o `EVENT_ID` e a `API_KEY`. **Guarde-os** — a chave
-não volta a aparecer. Sem credenciais da Debito Pay ainda (passo 5), a
+não volta a aparecer. Sem credenciais da iMali.Way ainda (passo 5), a
 criação de bilhete falha ao tentar cobrar — o resto da API (listar
 eventos, emitir convites, check-in) já funciona.
 
@@ -75,7 +75,7 @@ python manage.py test
 ```
 
 66+ testes, incluindo o fluxo de pagamento com mocks (`payments/tests.py`,
-`payments/tests_debitopay.py` — nenhum toca na rede).
+`payments/tests.py` — nenhum toca na rede).
 
 ---
 
@@ -121,26 +121,25 @@ Repita o passo 2 contra o Postgres antes de seguir.
 
 ---
 
-## Passo 5 — Credenciais Debito Pay
+## Passo 5 — Credenciais iMali.Way
 
-Crie a conta, entre no dashboard e obtenha as chaves de **sandbox** (não as
-de produção ainda). `payments/debitopay.py` documenta no topo o contrato
-assumido — endpoint único, ação `process`/`check-status`, assinatura
-HMAC-SHA256 sobre o corpo cru — e avisa que foi copiado de código anterior.
-Confirme contra a documentação oficial antes de ir para produção.
+Peça à Paytek o ambiente de **teste** (não o de produção ainda): `api_key`,
+`client_id`, `publicKey`, a conta STORE e o `webhook_secret`. A produção só é
+entregue depois do acordo comercial e da validação KYC/KYB.
 
-Preencha no `.env`:
+Preencha no `.env` (use `IMALIWAY_SANDBOX_*` para o ambiente de teste):
 
 ```
-DEBITOPAY_BASE_URL=https://...
-DEBITOPAY_SECRET_KEY=sk_sandbox_...
-DEBITOPAY_WEBHOOK_SECRET=...
-DEBITOPAY_MERCHANT_ID=...
-DEBITOPAY_WALLET_MPESA=...              # e as outras carteiras que for usar
+IMALIWAY_SANDBOX_API_KEY=...
+IMALIWAY_SANDBOX_CLIENT_ID=...
+IMALIWAY_SANDBOX_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+IMALIWAY_SANDBOX_STORE_ACCOUNT_NUMBER=...
+IMALIWAY_SANDBOX_WEBHOOK_SECRET=...
 ```
 
-Ver `docs/pagamentos.md` para a lista completa de variáveis e a arquitetura
-do adaptador.
+Duas coisas a combinar com a Paytek: **o IP de saída do servidor** (whitelist) e
+**o URL do webhook**. Ver `docs/pagamentos.md` (contrato, variáveis e
+arquitetura). As credenciais nunca vão para o repositório.
 
 ---
 
@@ -153,14 +152,14 @@ ngrok http 8901
 export PUBLIC_BASE_URL=https://abc123.ngrok.io
 ```
 
-Registe no dashboard Debito Pay o webhook:
-`https://abc123.ngrok.io/back/payments/webhooks/debitopay`
+Dê à Paytek o URL do webhook:
+`https://abc123.ngrok.io/back/payments/webhooks/imaliway`
 
 Faça uma compra real de sandbox e confirme três coisas nos logs:
 
 1. A cobrança foi criada (o bilhete tem `provider_charge_id`).
 2. O webhook chegou **e passou na assinatura** — um 401 aqui é quase
-   sempre `DEBITOPAY_WEBHOOK_SECRET` errada, ou a Debito Pay a assinar
+   sempre `IMALIWAY_SANDBOX_WEBHOOK_SECRET` errada, ou a iMali.Way a assinar
    algo diferente do que `_signature_ok` espera (ver `docs/pagamentos.md`).
 3. O bilhete passou a `paid`.
 
@@ -330,6 +329,6 @@ sempre no dia do evento e sempre com fila à porta.
   são os dois sinais de tentativa de fraude.
 - Defina backups automáticos do Postgres. Bilhetes vendidos não se recuperam.
 - Monitore a taxa de `reconcile_payments` que confirma pagamentos: se subir
-  muito, os webhooks estão a perder-se e vale a pena falar com a Debito Pay.
+  muito, os webhooks estão a perder-se e vale a pena falar com a Paytek (iMali.Way).
 - Rode as chaves de API dos parceiros periodicamente — `POST /api/api-keys/`
   emite, `DELETE /api/api-keys/{id}/` revoga sem apagar o histórico.

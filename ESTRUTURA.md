@@ -11,7 +11,7 @@ etk_api/
 ├── .github/workflows/tests.yml           CI: PostgreSQL 16, test + test_concurrency
 │
 ├── config/                               ── configuração do projeto
-│   ├── settings.py                       apps, BD, DRF, Debito Pay, segurança
+│   ├── settings.py                       apps, BD, DRF, iMali.Way, segurança
 │   ├── urls.py                           todas as rotas, num sítio só
 │   ├── envelope.py                       {status, message, data} + exception handler
 │   ├── tests.py                          prova que falta DJANGO_SECRET_KEY faz falhar o arranque
@@ -47,11 +47,11 @@ etk_api/
 ├── payments/                             ── COMO ENTRA O DINHEIRO
 │   ├── models.py                         ProviderEvent (idempotência)
 │   ├── services.py                   ★   iniciar · aplicar webhook · reconciliar
-│   ├── debitopay.py                  ★   o adaptador Debito Pay — sem abstração de provider plugável
+│   ├── imaliway.py                   ★   o adaptador iMali.Way — sem abstração de provider plugável
 │   ├── exceptions.py                     PaymentError e subclasses
 │   ├── views.py                          endpoint do webhook
 │   ├── tests.py                          fluxo webhook/reconciliação, com mocks
-│   ├── tests_debitopay.py                adaptador isolado, com mocks
+│   ├── tests.py                          fluxo completo e adaptador isolado, com mocks
 │   ├── management/commands/
 │   │   ├── reconcile_payments.py         cron */3 · webhooks perdidos
 │   │   └── expire_tickets.py             cron */2 · vagas presas
@@ -85,7 +85,7 @@ encanamento.
 
 | Método | Rota | Faz |
 |---|---|---|
-| POST | `/back/payments/webhooks/debitopay` | confirma pagamento (HMAC + idempotente) |
+| POST | `/back/payments/webhooks/imaliway` | confirma pagamento (HMAC + idempotente) |
 
 Não existe nenhuma rota de confirmação sem assinatura — a única forma de um
 bilhete passar a `paid` é este webhook, a confirmação síncrona do M-Pesa, a
@@ -176,7 +176,7 @@ POST /tickets/check-in  {"qrValue": "TCKT…|hmac"}
 | Quero… | Ficheiro |
 |---|---|
 | mudar o prazo da reserva | `config/settings.py` → `TICKET_RESERVATION_MINUTES` |
-| acertar o contrato Debito Pay | `payments/debitopay.py` (topo do ficheiro) |
+| acertar o contrato iMali.Way | `payments/imaliway.py` (topo do ficheiro) |
 | mudar o formato dos IDs | `catalog/models.py` → `make_id()` |
 | acrescentar campo à resposta | o `to_api()` do modelo respetivo |
 | mudar regras de venda | `ticketing/services.py` → `create_ticket()` |

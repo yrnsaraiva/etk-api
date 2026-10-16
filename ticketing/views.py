@@ -2,7 +2,6 @@
 
 import logging
 
-from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -160,10 +159,7 @@ class ExternalTicketCreateView(APIView):
                           status.HTTP_200_OK)
 
             try:
-                charge = start_payment(
-                    ticket,
-                    callback_url=f"{settings.PUBLIC_BASE_URL}/back/payments/webhooks/debitopay",
-                )
+                charge = start_payment(ticket)
             except PaymentDeclined as exc:
                 logger.info("cobrança recusada para %s: %s", ticket.id, exc)
                 return fail(

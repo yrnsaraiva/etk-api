@@ -97,47 +97,37 @@ REST_FRAMEWORK = {
 }
 SIMPLE_JWT = {"ACCESS_TOKEN_LIFETIME": timedelta(minutes=60)}
 
-DEBITOPAY = {
-    "BASE_URL": os.getenv(
-        "DEBITOPAY_BASE_URL",
-        "https://gyqoaningqhurhvdugne.supabase.co/functions/v1",
-    ),
-    "SECRET_KEY": os.getenv("DEBITOPAY_SECRET_KEY", ""),        # sk_live_… / sk_sandbox_…
-    "WEBHOOK_SECRET": os.getenv("DEBITOPAY_WEBHOOK_SECRET", ""),
-    "SIGNATURE_HEADER": "X-Webhook-Signature",                  # fixo, definido pela Debito Pay
-    "MERCHANT_ID": os.getenv("DEBITOPAY_MERCHANT_ID", ""),
-    # Cada método de pagamento tem a sua própria carteira (wallet_code) na
-    # Debito Pay não é o mesmo código para todos os métodos.
-    "WALLETS": {
-        "mpesa": os.getenv("DEBITOPAY_WALLET_MPESA", ""),
-        "emola": os.getenv("DEBITOPAY_WALLET_EMOLA", ""),
-        "mkesh": os.getenv("DEBITOPAY_WALLET_MKESH", ""),
-        "visa_mastercard": os.getenv("DEBITOPAY_WALLET_CARD", ""),
-        "payfast": os.getenv("DEBITOPAY_WALLET_PAYFAST", ""),
-    },
-    "DEFAULT_METHOD": os.getenv("DEBITOPAY_DEFAULT_METHOD", "mpesa"),
-    "TIMEOUT": 90,
+# iMali.Way (Paytek) — o gateway de pagamento. Ver payments/imaliway.py.
+# As credenciais vêm sempre do ambiente; nunca ficam no repositório.
+IMALIWAY_DEFAULT_URL = "https://paytek-africa.net:11901/api/partners/imaliway/v2"
+IMALIWAY = {
+    "BASE_URL": os.getenv("IMALIWAY_BASE_URL", IMALIWAY_DEFAULT_URL),
+    "API_KEY": os.getenv("IMALIWAY_API_KEY", ""),
+    "CLIENT_ID": os.getenv("IMALIWAY_CLIENT_ID", ""),                # cabeçalho X-Client-ID
+    "PUBLIC_KEY": os.getenv("IMALIWAY_PUBLIC_KEY", ""),              # PEM (aceita "\n" literais)
+    "STORE_ACCOUNT_NUMBER": os.getenv("IMALIWAY_STORE_ACCOUNT_NUMBER", ""),   # conta STORE (9 dígitos)
+    "WEBHOOK_SECRET": os.getenv("IMALIWAY_WEBHOOK_SECRET", ""),
+    "DEFAULT_METHOD": os.getenv("IMALIWAY_DEFAULT_METHOD", "mpesa"),
+    # Tempo que o cliente tem para aprovar o push (a API assume 2 minutos se nada
+    # for enviado). Nunca ultrapassa a reserva do bilhete.
+    "PUSH_EXPIRATION_MINUTES": int(os.getenv("IMALIWAY_PUSH_EXPIRATION_MINUTES", "5")),
+    "TIMEOUT": 60,
 }
-# Usada quando o ticket foi criado com uma chave etk_test_… (Fase 4.2): sem
-# isto, uma chave "test" tinha os mesmos poderes que uma "live" e cobrava de
-# verdade. Por omissão herda BASE_URL/SIGNATURE_HEADER/TIMEOUT da conta live
-# (a Debito Pay parece partilhar o mesmo endpoint), só as credenciais mudam.
-DEBITOPAY_SANDBOX = {
-    "BASE_URL": os.getenv("DEBITOPAY_SANDBOX_BASE_URL", DEBITOPAY["BASE_URL"]),
-    "SECRET_KEY": os.getenv("DEBITOPAY_SANDBOX_SECRET_KEY", ""),   # sk_sandbox_…
-    "WEBHOOK_SECRET": os.getenv("DEBITOPAY_SANDBOX_WEBHOOK_SECRET", ""),
-    "SIGNATURE_HEADER": DEBITOPAY["SIGNATURE_HEADER"],
-    "MERCHANT_ID": os.getenv("DEBITOPAY_SANDBOX_MERCHANT_ID", ""),
-    "WALLETS": {
-        "mpesa": os.getenv("DEBITOPAY_SANDBOX_WALLET_MPESA", ""),
-        "emola": os.getenv("DEBITOPAY_SANDBOX_WALLET_EMOLA", ""),
-        "mkesh": os.getenv("DEBITOPAY_SANDBOX_WALLET_MKESH", ""),
-        "visa_mastercard": os.getenv("DEBITOPAY_SANDBOX_WALLET_CARD", ""),
-        "payfast": os.getenv("DEBITOPAY_SANDBOX_WALLET_PAYFAST", ""),
-    },
-    "DEFAULT_METHOD": os.getenv("DEBITOPAY_SANDBOX_DEFAULT_METHOD", DEBITOPAY["DEFAULT_METHOD"]),
-    "TIMEOUT": DEBITOPAY["TIMEOUT"],
+# Chaves de teste (`etk_test_…`) cobram na sandbox da iMali.Way, nunca na conta live.
+# A documentação não lista um endereço separado: só as credenciais mudam.
+IMALIWAY_SANDBOX = {
+    "BASE_URL": os.getenv("IMALIWAY_SANDBOX_BASE_URL", IMALIWAY["BASE_URL"]),
+    "API_KEY": os.getenv("IMALIWAY_SANDBOX_API_KEY", ""),
+    "CLIENT_ID": os.getenv("IMALIWAY_SANDBOX_CLIENT_ID", ""),
+    "PUBLIC_KEY": os.getenv("IMALIWAY_SANDBOX_PUBLIC_KEY", ""),
+    "STORE_ACCOUNT_NUMBER": os.getenv("IMALIWAY_SANDBOX_STORE_ACCOUNT_NUMBER", ""),
+    "WEBHOOK_SECRET": os.getenv("IMALIWAY_SANDBOX_WEBHOOK_SECRET", ""),
+    "DEFAULT_METHOD": os.getenv("IMALIWAY_SANDBOX_DEFAULT_METHOD", IMALIWAY["DEFAULT_METHOD"]),
+    "PUSH_EXPIRATION_MINUTES": IMALIWAY["PUSH_EXPIRATION_MINUTES"],
+    "TIMEOUT": IMALIWAY["TIMEOUT"],
 }
+# Já não viaja no pedido ao gateway (o URL do webhook é registado na Paytek):
+# serve de referência para o URL público da API.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://etk-api.up.railway.app")
 
 DEFAULT_CURRENCY = "MZN"

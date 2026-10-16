@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
-def debitopay_webhook(request):
-    """POST /back/payments/webhooks/debitopay
+def imaliway_webhook(request):
+    """POST /back/payments/webhooks/imaliway
 
     Responde 200 a tudo o que seja autêntico — mesmo a eventos que ignoramos.
     Um 4xx faz o gateway reenviar em ciclo sem que isso resolva nada.

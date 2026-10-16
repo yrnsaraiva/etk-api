@@ -2,7 +2,7 @@
 
 API REST de venda de bilhetes para eventos, em Django e Django REST
 Framework. Sites parceiros vendem bilhetes através dela — pagamento pela
-[Debito Pay](docs/pagamentos.md), check-in por QR assinado.
+[iMali.Way](docs/pagamentos.md), check-in por QR assinado.
 
 Replica o contrato da API da eTickets (`eticketsmz.site/back/borrow/external/...`)
 que o site `runwithbroto` já consome, para esse cliente poder passar a usar
@@ -12,7 +12,7 @@ impostos pelo cliente e não devem mudar.
 
 | Documento | Para quê |
 |---|---|
-| `docs/pagamentos.md` | arquitetura do pagamento (Debito Pay, defesas, testes) |
+| `docs/pagamentos.md` | arquitetura do pagamento (iMali.Way, defesas, testes) |
 | `GUIA.md` | pôr em produção (Railway, Postgres, cron) passo a passo |
 | `GUIA-DESENVOLVIMENTO.md` | como o projeto foi construído, etapa a etapa |
 | `ESTRUTURA.md` | mapa de ficheiros e rotas |
@@ -49,7 +49,7 @@ por isso essa string é parte do contrato.
 
 | Método | Rota |
 |---|---|
-| POST | `/back/payments/webhooks/debitopay` |
+| POST | `/back/payments/webhooks/imaliway` |
 
 ### Gestão — o organizador, com JWT
 
@@ -76,7 +76,7 @@ python manage.py runserver 8901
 ```
 
 O `seed_demo` imprime o `EVENT_ID` e a `API_KEY` uma única vez — guarde-os.
-Sem credenciais da Debito Pay, `POST /back/borrow/external/tickets` chega a
+Sem credenciais da iMali.Way, `POST /back/borrow/external/tickets` chega a
 criar o bilhete `pending` mas a chamada ao gateway falha (sem `wallet_code`
 configurada); ver `docs/pagamentos.md` para testar o pagamento a sério.
 

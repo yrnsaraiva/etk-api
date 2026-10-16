@@ -7,7 +7,7 @@ runwithbroto, onde o scanner compara com um valor local desatualizado.
 
 `notify_partner()` só cria a linha em `PartnerDelivery`, dentro da mesma
 transação que muda o estado do bilhete — nunca faz o pedido HTTP aqui. Um
-parceiro lento não pode prender um worker do webhook da Debito Pay à espera
+parceiro lento não pode prender um worker do webhook da iMali.Way à espera
 da resposta, e um aviso nunca se perde só porque o parceiro estava em baixo
 no momento exato da confirmação. A entrega de facto corre à parte, no
 comando `deliver_webhooks` (cron, a cada minuto).
