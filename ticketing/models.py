@@ -59,7 +59,7 @@ class Ticket(models.Model):
     payment = models.CharField(max_length=20, choices=Payment.choices, default=Payment.PENDING)
     payment_method = models.CharField(max_length=40, blank=True)
     # True quando a ApiKey que criou o bilhete é "test": a cobrança usa a
-    # sandbox da Debito Pay (settings.DEBITOPAY_SANDBOX), nunca a conta live.
+    # sandbox da iMali.Way (settings.IMALIWAY_SANDBOX), nunca a conta live.
     test_mode = models.BooleanField(default=False)
     provider = models.CharField(max_length=40, blank=True)
     provider_charge_id = models.CharField(max_length=128, blank=True, db_index=True)
@@ -189,7 +189,7 @@ class CheckInLog(models.Model):
 class PartnerDelivery(models.Model):
     """Fila de avisos ao parceiro. `notify_partner()` só cria esta linha,
     dentro da mesma transação que confirma o pagamento (ou o reembolso) —
-    nunca prende o pedido do webhook da Debito Pay à espera da resposta do
+    nunca prende o pedido do webhook da iMali.Way à espera da resposta do
     site do parceiro, e nunca perde o aviso se o parceiro estiver em baixo.
     A entrega de facto corre à parte, no comando `deliver_webhooks`.
     """

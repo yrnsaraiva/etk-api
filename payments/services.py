@@ -6,7 +6,7 @@
    Daí a reconciliação (reconcile_pending).
 
 Regra nova (a corrigir o bug dos tickets pending duplicados):
-3. Qualquer falha ao criar a cobrança — recusa da Debito Pay, timeout, ou um
+3. Qualquer falha ao criar a cobrança — recusa da iMali.Way, timeout, ou um
    erro inesperado — LIBERTA a vaga já. Nunca fica um ticket pending sem
    cobrança associada à espera do cron de expiração (15 min). Se o parceiro
    repetir o pedido com o mesmo `external_reference`, o ticket antigo já
@@ -21,33 +21,36 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ticketing.models import PaymentAttempt, Ticket
-from ticketing.services import confirm_payment, reclaim_and_confirm, refund, release
+from ticketing.services import confirm_payment, reclaim_and_confirm, release
 
-from . import debitopay
-from .debitopay import FAILED, PENDING, REFUNDED, SUCCEEDED, PROVIDER_NAME, Charge
+from . import imaliway
+from .imaliway import FAILED, PENDING, SUCCEEDED, PROVIDER_NAME, Charge
 from .exceptions import PaymentError
 from .models import ProviderEvent
 
 logger = logging.getLogger(__name__)
 
 
-def start_payment(ticket: Ticket, *, callback_url: str) -> Charge:
-    """Cria a cobrança na Debito Pay e guarda a referência no bilhete.
+def start_payment(ticket: Ticket) -> Charge:
+    """Cria o push payment na iMali.Way e guarda a referência no bilhete.
 
-    Se a Debito Pay confirmar de imediato (M-Pesa síncrono), o bilhete já sai
-    daqui como `paid`. Se a cobrança falhar por qualquer motivo, o bilhete
+    O cliente aprova no telemóvel: o bilhete fica `pending` até chegar o
+    webhook (ou a reconciliação). Se a iMali.Way já devolver sucesso, o bilhete
+    sai daqui como `paid`. Se a cobrança falhar por qualquer motivo, o bilhete
     sai daqui como `failed` e a vaga já foi devolvida — nunca fica pending
     sem cobrança associada.
+
+    O URL do webhook não viaja no pedido: é registado na Paytek, no onboarding.
     """
     try:
-        charge = debitopay.create_charge(
+        charge = imaliway.create_charge(
             amount=ticket.amount,
             currency=ticket.currency,
-            reference=ticket.id,                     # o nosso id é a chave de idempotência
+            reference=ticket.id,       # dele sai o partner_transaction_id, estável por bilhete
             phone=ticket.phone,
             method=ticket.payment_method,
             description=f"{ticket.event.name} — {ticket.price.name}",
-            callback_url=callback_url,
+            expires_at=ticket.expires_at,
             sandbox=ticket.test_mode,
         )
     except PaymentError as exc:
@@ -87,7 +90,7 @@ def start_payment(ticket: Ticket, *, callback_url: str) -> Charge:
 
 def handle_webhook(body: bytes, headers) -> tuple[bool, str]:
     """Devolve (processado, mensagem). Levanta InvalidSignature se não for autêntico."""
-    event = debitopay.parse_webhook(body, headers)   # valida assinatura
+    event = imaliway.parse_webhook(body, headers)   # valida assinatura
 
     try:
         with transaction.atomic():
@@ -100,8 +103,10 @@ def handle_webhook(body: bytes, headers) -> tuple[bool, str]:
         return False, "Evento já recebido (ignorado)."   # reenvio do gateway
 
     try:
+        if not event.charge_reference:
+            raise Ticket.DoesNotExist       # evento que não é de cobrança (ex.: transferência B2C)
         ticket = Ticket.objects.select_related("price__event", "issued_to").get(
-            provider_charge_id=event.charge_reference
+            provider=PROVIDER_NAME, provider_charge_id=event.charge_reference
         )
     except Ticket.DoesNotExist:
         logger.warning("webhook para cobrança desconhecida: %s", event.charge_reference)
@@ -155,10 +160,6 @@ def _settle(ticket: Ticket, *, status: str, amount, currency: str | None,
         release(ticket, Ticket.Payment.FAILED)
         return "Pagamento falhou — vaga libertada."
 
-    if status == REFUNDED:
-        refund(ticket)   # já enfileira ticket.refunded, se aplicável
-        return "Pagamento reembolsado — bilhete anulado."
-
     return "Estado pendente — sem alteração."
 
 
@@ -173,28 +174,27 @@ def _mark_review(ticket: Ticket) -> None:
 
 
 def reconcile_pending(limit: int = 200) -> dict:
-    """Sonda a Debito Pay sobre bilhetes ainda pendentes.
+    """Sonda a iMali.Way sobre bilhetes ainda pendentes.
 
-    Correr a cada poucos minutos. Salva o cliente que pagou por e-Mola/mKesh/
-    cartão e cujo webhook nunca chegou. (M-Pesa raramente chega aqui pendente,
-    porque confirma de forma síncrona em start_payment.)
+    Correr a cada poucos minutos. Salva o cliente que pagou (M-Pesa, e-Mola, mKesh)
+    e cujo webhook nunca chegou — o push é sempre assíncrono.
     """
     pending = Ticket.objects.filter(
-        payment=Ticket.Payment.PENDING, provider_charge_id__gt=""
+        payment=Ticket.Payment.PENDING, provider=PROVIDER_NAME, provider_charge_id__gt=""
     ).select_related("price__event", "issued_to")[:limit]
 
     stats = {"verificados": 0, "confirmados": 0, "falhados": 0, "erros": 0}
     for ticket in pending:
         stats["verificados"] += 1
         try:
-            charge = debitopay.fetch_charge(ticket.provider_charge_id, sandbox=ticket.test_mode)
+            charge = imaliway.fetch_charge(ticket.provider_charge_id, sandbox=ticket.test_mode)
         except PaymentError as exc:
             logger.warning("reconciliação falhou para %s: %s", ticket.id, exc)
             stats["erros"] += 1
             continue
 
         if charge.status == SUCCEEDED:
-            outcome = _settle(ticket, status=SUCCEEDED, amount=charge.amount,
+            outcome = _settle(ticket, status=SUCCEEDED, amount=charge.amount,          # None: a consulta de estado não devolve o valor
                               currency=charge.currency, reference=charge.reference, raw=charge.raw)
             if outcome == "Pagamento confirmado.":
                 stats["confirmados"] += 1

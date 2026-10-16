@@ -1,117 +1,160 @@
-# Pagamentos (Debito Pay)
+# Pagamentos (iMali.Way)
 
-## O contrato, confirmado pela documentação oficial
+O gateway é a **iMali.Way** (Paytek). Substituiu por completo a Debito Pay:
+não há código, rota nem configuração da Debito Pay. Os bilhetes antigos
+mantêm `provider = "debitopay"` como histórico e nunca são tocados.
 
-URL base: `https://gyqoaningqhurhvdugne.supabase.co/functions/v1`. Um único
-ponto de entrada, `/payment-orchestrator`, que encaminha internamente
-conforme `payment_method` (`mpesa`, `emola`, `mkesh`, `visa_mastercard`,
-`payfast`). Autenticação por `Authorization: Bearer sk_live_...` (ou
-`sk_sandbox_...`).
+## O contrato
 
-Duas particularidades que não são o padrão de mercado e que moldaram o
-adaptador (`payments/debitopay.py`):
+Fonte: *iMali Payment Gateway API — Partner Integration*, v1.4a (22-04-2026), e
+as *Partner Specifications* (dados do ambiente de teste).
 
-**M-Pesa confirma de forma síncrona.** A própria resposta ao `POST` inicial
-já vem com `status: "success"` — não há webhook a esperar. e-Mola, mKesh e
-cartões continuam assíncronos (`status: "pending"`, confirmação por
-`payment.completed` ou pelo `check-status`).
+URL base: `https://paytek-africa.net:11901/api/partners/imaliway/v2`. A
+documentação não lista um endereço separado para a sandbox: só mudam as
+credenciais (`IMALIWAY_SANDBOX_*`).
 
-**Cada método de pagamento tem a sua própria carteira.** `wallet_code` não é
-o mesmo para M-Pesa, e-Mola e cartão — é preciso configurar uma por método
-(`DEBITOPAY_WALLET_MPESA`, `DEBITOPAY_WALLET_EMOLA`, etc.), além do
-`merchant_id`, comum a todas.
+**Autenticação.** Cada pedido leva `Authorization: Bearer <privateKey>` e
+`X-Client-ID`. A `privateKey` é a `api_key` cifrada com a `publicKey` da Paytek
+(RSA, padding PKCS#1 v1.5), em base64. A cifra é aleatória, por isso gera-se
+uma chave nova por pedido (`imaliway.private_key()`).
 
-Webhook assinado em `X-Webhook-Signature`, HMAC-SHA256 em hex sobre o corpo
-cru — confirmado contra o exemplo Node.js da própria documentação.
+> **A confirmar na sandbox:** a documentação mostra o formato da `privateKey`
+> numa imagem. Assumimos base64 (o habitual). Se a API responder
+> `500 Invalid token` com credenciais certas, é aqui que está o problema.
 
-> `payments/debitopay.py` avisa no topo que este contrato foi copiado de
-> código anterior. Um teste real em sandbox antes de qualquer alteração
-> grande evita construir sobre suposições.
+**Push payment** — `POST /payments`:
+
+| campo | valor |
+|---|---|
+| `client_account_number` | telemóvel de 9 dígitos, sem 258 (`841234567`) |
+| `amount` | mínimo 10 MT |
+| `store_account_number` | conta STORE iMali (9 dígitos) |
+| `partner_transaction_id` | exatamente 12 caracteres alfanuméricos |
+| `payment_method` | `mpesa` · `emola` · `mkesh` · `imali` |
+| `payment_type` / `transaction_type` | `push` / `C2B` |
+| `expiration_datetime` | `Y-m-d H:i:s` (opcional; por omissão 2 minutos) |
+
+O estado inicial é sempre `PENDING`: o cliente aprova no telemóvel. **Não há
+confirmação síncrona** (a Debito Pay tinha-a para o M-Pesa).
+
+**Estado** — `GET /payments/status?payment_type=push&partner_transaction_id=…`
+devolve `PENDING | SUCCESS | FAILED | EXPIRED` e o tempo restante, **sem o
+valor**. `EXPIRED` conta como falhado: a vaga volta.
+
+**Webhook** — eventos `PAYMENT.PENDING | PAYMENT.SUCCESS | PAYMENT.FAILED`.
+Assinatura: HMAC-SHA256 de `"{timestamp}.{corpo cru}"` com o segredo do
+webhook; janela anti-replay de 5 minutos; reenvios até 10 vezes em 72 horas
+se a resposta não for 2xx. A documentação é inconsistente nos cabeçalhos
+(`X-Webhook-Signature`/`X-Webhook-Timestamp` nos exemplos,
+`X-Signature`/`X-Timestamp` na tabela) e o exemplo traz o prefixo `sha256=`:
+aceitamos as duas grafias, com ou sem prefixo.
+
+**Não existe**: cartão, reembolso nem estorno automáticos. Só há
+transferências B2C (saída de dinheiro), que não usamos.
+
+## Configuração
+
+Tudo por variáveis de ambiente — **nunca no repositório**:
+
+| variável | o quê |
+|---|---|
+| `IMALIWAY_API_KEY` | `api_key` do parceiro |
+| `IMALIWAY_CLIENT_ID` | `client_id` (cabeçalho `X-Client-ID`) |
+| `IMALIWAY_PUBLIC_KEY` | `publicKey` em PEM (aceita `\n` literais, numa só linha) |
+| `IMALIWAY_STORE_ACCOUNT_NUMBER` | conta STORE iMali |
+| `IMALIWAY_WEBHOOK_SECRET` | `webhook_secret` |
+| `IMALIWAY_BASE_URL` | opcional; por omissão o URL acima |
+| `IMALIWAY_DEFAULT_METHOD` | opcional; `mpesa` |
+| `IMALIWAY_PUSH_EXPIRATION_MINUTES` | opcional; `5` (nunca passa da reserva do bilhete) |
+| `IMALIWAY_SANDBOX_*` | as mesmas, para chaves `etk_test_…` |
+
+Duas coisas fora do código, combinadas com a Paytek:
+
+1. **Whitelist de IP.** A Paytek só aceita pedidos de um IP registado. É o IP
+   de saída do servidor da API (no Railway, é preciso um IP de saída fixo).
+   Enquanto não estiver registado, a ligação é cortada.
+2. **URL do webhook.** Dar à Paytek `https://<API>/back/payments/webhooks/imaliway`.
 
 ## Arquitetura
 
 Um único módulo, sem abstração de "provider plugável" — só há um gateway:
 
 ```
-ticketing/views.py  ──>  payments/services.py  ──>  payments/debitopay.py
+ticketing/views.py  ──>  payments/services.py  ──>  payments/imaliway.py
                           (start_payment, _settle,
                            handle_webhook, reconcile_pending)
 ```
 
 `payments/services.py` também chama de volta para `ticketing/services.py`
-(`confirm_payment`, `reclaim_and_confirm`, `refund`, `release`) — é lá que
-vivem as regras sobre vagas e estado do bilhete; `payments/` só orquestra o
-gateway.
+(`confirm_payment`, `reclaim_and_confirm`, `release`) — é lá que vivem as
+regras sobre vagas e estado do bilhete; `payments/` só orquestra o gateway.
+
+O `partner_transaction_id` (que guardamos em `Ticket.provider_charge_id`) é
+derivado do id do bilhete, de forma determinística. Repetir o pedido para o
+mesmo bilhete nunca cria uma segunda cobrança: o gateway responde 406 ("já em
+uso") e o adaptador devolve o estado da cobrança que já existe.
 
 ## Fluxo
 
 ```
 POST /tickets
   → create_ticket()     reserva a vaga
-  → start_payment()     cria a cobrança
-       M-Pesa            já confirma aqui — bilhete sai "paid"
-       e-Mola/mKesh      "pending", confirma por webhook
-       cartão            "pending", checkout_url para o Hosted Checkout
+  → start_payment()     cria o push; o cliente aprova no telemóvel
+                        bilhete "pending" (sempre assíncrono)
 
-webhook payment.completed   -> assinatura -> valor -> paid -> enfileira aviso ao parceiro
-webhook perdido             -> reconcile_payments (cron) sonda e confirma
-webhook payment.failed      -> vaga libertada
-webhook payment.refunded/
-        payment.chargeback  -> anula o bilhete, devolve a vaga (ver "Reembolsos")
-sem pagamento em 15 min     -> expire_tickets liberta a vaga
+webhook PAYMENT.SUCCESS  -> assinatura -> valor -> paid -> enfileira aviso ao parceiro
+webhook perdido          -> reconcile_payments (cron) sonda e confirma
+webhook PAYMENT.FAILED   -> vaga libertada
+estado EXPIRED           -> vaga libertada (na reconciliação)
+sem pagamento em 15 min  -> expire_tickets liberta a vaga
 pagamento tardio (depois
-  dos 15 min)               -> tenta reservar de novo; sem vaga, fica "review"
+  dos 15 min)            -> tenta reservar de novo; sem vaga, fica "review"
 ```
 
-## Cinco defesas no caminho do dinheiro
+Falhas ao criar a cobrança (valor abaixo de 10 MT, método não suportado, saldo
+insuficiente, gateway em baixo…) libertam a vaga na hora e devolvem 402 (recusa)
+ou 502 (indisponível).
 
-**Assinatura.** Webhook sem HMAC válido devolve 401 e não toca na base de
-dados. Comparação com `compare_digest`, para o tempo de resposta não
-revelar o segredo.
+## Defesas no caminho do dinheiro
+
+**Assinatura.** Webhook sem HMAC válido, ou fora da janela de 5 minutos,
+devolve 401 e não toca na base de dados. Comparação com `compare_digest`.
 
 **Idempotência.** Cada evento é gravado em `ProviderEvent` com
-`unique(provider, event_id)`. O gateway reenvia em caso de timeout; o
-reenvio é ignorado em vez de confirmar o bilhete duas vezes.
+`unique(provider, event_id)`. O gateway reenvia; o reenvio é ignorado.
 
-**Valor.** Um webhook autêntico pode trazer um valor adulterado se o
-gateway tiver sido enganado a montante. A mesma verificação corre também na
-confirmação síncrona do M-Pesa — não é exclusiva do webhook. Antes de
-marcar `paid`, compara-se o valor devolvido com `ticket.amount`; se
-divergir, o bilhete fica `review` em vez de confirmado (e o cron de
-expiração já não lhe toca).
+**Valor.** Antes de marcar `paid`, compara-se o valor do webhook com
+`ticket.amount`; se divergir, fica `review`. A consulta de estado não traz o
+valor, por isso, na reconciliação, a confirmação confia no valor que nós
+próprios pedimos.
 
-**Pagamento tardio nunca é dinheiro perdido.** Se o pagamento chega depois
-de a reserva expirar (comum em mobile money), `reclaim_and_confirm` tenta
-reservar de novo uma vaga no mesmo lote — confirma se houver, fica `review`
-para decisão manual no `/admin/` se não houver. O webhook responde sempre
-200 a eventos autênticos; o resultado fica em `ProviderEvent.outcome` e um
-log `ERROR` sinaliza o bilhete.
+**Pagamento tardio nunca é dinheiro perdido.** `reclaim_and_confirm` tenta
+reservar de novo; sem vaga, fica `review` para decisão manual no `/admin/`.
 
-**Reconciliação.** Cobre e-Mola, mKesh e cartão — métodos assíncronos cujo
-webhook pode perder-se. M-Pesa raramente aparece aqui, porque já confirma
-na chamada inicial.
+**Só cobranças.** Eventos de transferência B2C ou de tipo desconhecido (por
+exemplo, um futuro reembolso) não alteram bilhetes.
+
+**Reconciliação.** O push é sempre assíncrono, por isso a reconciliação cobre
+todos os métodos. Só sonda bilhetes do próprio gateway (`provider = imaliway`).
 
 ```bash
 */3 * * * * cd /app && python manage.py reconcile_payments
 ```
 
-## Reembolsos e chargebacks
+## Reembolsos
 
-`payment.refunded` e `payment.chargeback` (`ticketing.services.refund`)
-anulam o bilhete: `payment = refunded`, `status = cancelled`, e a vaga
-volta ao lote se o evento ainda não passou. `check_in` já recusa bilhetes
-`refunded` (via `Ticket.ENTRY_ALLOWED`) e `cancelled` (via `status`).
-
-Um bilhete `review` também pode ser marcado para reembolso a partir do
-`/admin/` — nesse caso não havia vaga ocupada, por isso nada é devolvido ao
-lote.
+A iMali.Way não tem reembolso nem estorno automáticos, e não envia esse tipo
+de evento. O reembolso é feito **à mão, fora do sistema** (transferência para o
+cliente), e depois marcado no `/admin/` com "Marcar para reembolso": anula o
+bilhete (`payment = refunded`, `status = cancelled`) e devolve a vaga se o
+evento ainda não passou. `check_in` recusa bilhetes `refunded` e `cancelled`.
 
 ## Aviso ao parceiro: fila, não pedido síncrono
 
 `notify_partner` não faz nenhum pedido HTTP — só cria uma linha em
 `PartnerDelivery`, dentro da mesma transação que confirma o pagamento ou o
 reembolso. Isto acontece assim porque um parceiro lento não pode prender um
-worker do webhook da Debito Pay, e um aviso não pode perder-se só porque o
+worker do webhook da iMali.Way, e um aviso não pode perder-se só porque o
 parceiro estava em baixo no momento exato da confirmação.
 
 A entrega de facto corre à parte, no comando `deliver_webhooks` (cron, a
@@ -135,60 +178,55 @@ Uma `ApiKey` com `environment=test` (prefixo `etk_test_…`) nunca cobra
 dinheiro real: `Ticket.test_mode` fica `True` na criação (lido de
 `request.auth.environment`, a chave que autenticou o pedido) e
 `start_payment`/`reconcile_pending` passam `sandbox=True` a
-`payments/debitopay.py`, que troca `settings.DEBITOPAY` por
-`settings.DEBITOPAY_SANDBOX` — URL, credenciais, `merchant_id` e carteiras
-todos podem ser diferentes.
+`payments/imaliway.py`, que troca `settings.IMALIWAY` por
+`settings.IMALIWAY_SANDBOX` — credenciais, conta STORE e segredo do webhook
+são os do ambiente de teste da Paytek.
 
 O webhook é um único endpoint para as duas contas: `parse_webhook` tenta a
 assinatura com o segredo live e, se não bater, com o da sandbox — por isso
-`DEBITOPAY_SANDBOX_WEBHOOK_SECRET` também tem de estar configurado para os
+`IMALIWAY_SANDBOX_WEBHOOK_SECRET` também tem de estar configurado para os
 eventos da sandbox serem aceites.
 
 ## Testar
 
 ```bash
-python manage.py test                            # suite completa
-python manage.py test payments.tests_debitopay    # adaptador, sem rede (mocks)
-python manage.py test payments                    # fluxo webhook/reconciliação, sem rede (mocks)
+python manage.py test                                          # suite completa
+python manage.py test payments                                 # pagamento, sem rede (mocks)
 python manage.py test_concurrency --vagas 3 --compradores 10   # exige PostgreSQL
 ```
 
-`tests_debitopay.py` cobre: o payload certo por método, a confirmação
-síncrona do M-Pesa, a wallet certa por método, erro do gateway traduzido,
-assinatura válida/inválida, e a prova de que a assinatura é sobre o corpo
-cru — assinar o JSON reserializado falha, de propósito.
+`payments/tests.py` cobre, sempre com `unittest.mock` em
+`payments.imaliway.requests.request` (nunca toca na rede):
 
-`payments/tests.py` cobre o fluxo de ponta a ponta via `APIClient` e
-webhooks HTTP reais (com assinatura), incluindo os casos de pagamento
-tardio, valor divergente e reembolso — tudo com `unittest.mock` em
-`requests.post`, sem tocar na rede.
+- **o pedido:** o payload do contrato, o número sem indicativo, a
+  `privateKey` (decifrada com a chave privada de teste, tem lá a `api_key`),
+  a expiração do push, o valor mínimo, o método não suportado (nunca cai em
+  M-Pesa por engano), a repetição que não duplica a cobrança (406);
+- **os erros:** recusa do gateway (402), gateway em baixo (502), token inválido
+  (configuração, não recusa), configuração em falta;
+- **o webhook:** assinatura (com/sem prefixo, os dois nomes de cabeçalho, sem
+  timestamp), anti-replay, idempotência, valor adulterado, falhado, tardio com
+  e sem vaga, transferência B2C e tipos desconhecidos ignorados, bilhetes de
+  outro gateway intocados, segredo da sandbox;
+- **a reconciliação** e as **chaves de teste** (credenciais da sandbox).
 
 ## Variáveis de ambiente
 
 ```
-DEBITOPAY_BASE_URL=https://gyqoaningqhurhvdugne.supabase.co/functions/v1
-DEBITOPAY_SECRET_KEY=sk_live_...
-DEBITOPAY_WEBHOOK_SECRET=...
-DEBITOPAY_MERCHANT_ID=...
-DEBITOPAY_WALLET_MPESA=...
-DEBITOPAY_WALLET_EMOLA=...
-DEBITOPAY_WALLET_MKESH=...
-DEBITOPAY_WALLET_CARD=...
-DEBITOPAY_WALLET_PAYFAST=...
-DEBITOPAY_DEFAULT_METHOD=mpesa
+IMALIWAY_API_KEY=...
+IMALIWAY_CLIENT_ID=...
+IMALIWAY_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+IMALIWAY_STORE_ACCOUNT_NUMBER=...
+IMALIWAY_WEBHOOK_SECRET=...
 PUBLIC_BASE_URL=https://a-sua-api.com
 
-# sandbox (chaves etk_test_…) — por omissão herda BASE_URL/DEFAULT_METHOD da conta live
-DEBITOPAY_SANDBOX_SECRET_KEY=sk_sandbox_...
-DEBITOPAY_SANDBOX_WEBHOOK_SECRET=...
-DEBITOPAY_SANDBOX_MERCHANT_ID=...
-DEBITOPAY_SANDBOX_WALLET_MPESA=...
-DEBITOPAY_SANDBOX_WALLET_EMOLA=...
-DEBITOPAY_SANDBOX_WALLET_MKESH=...
-DEBITOPAY_SANDBOX_WALLET_CARD=...
-DEBITOPAY_SANDBOX_WALLET_PAYFAST=...
+# sandbox (chaves etk_test_…) — por omissão herda BASE_URL e DEFAULT_METHOD da conta live
+IMALIWAY_SANDBOX_API_KEY=...
+IMALIWAY_SANDBOX_CLIENT_ID=...
+IMALIWAY_SANDBOX_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+IMALIWAY_SANDBOX_STORE_ACCOUNT_NUMBER=...
+IMALIWAY_SANDBOX_WEBHOOK_SECRET=...
 ```
 
-Configure só as carteiras dos métodos que vai mesmo usar; um método sem
-`wallet_code` falha cedo, antes de chegar à rede, com uma mensagem que diz
-qual variável falta.
+Um valor em falta falha cedo, antes de chegar à rede, com uma mensagem que
+diz qual variável falta.

@@ -1,5 +1,11 @@
 # Como construir a etk-api do zero
 
+> **Nota (outubro de 2026):** o gateway passou a ser a **iMali.Way**; a Debito
+> Pay foi removida por completo. Este guia conta como a API foi construída e a
+> Debito Pay aparece nas etapas 10 e 11 como história. O adaptador atual é
+> `payments/imaliway.py` — ver `docs/pagamentos.md`.
+
+
 > **Nota sobre esta versão.** As Etapas 10 e 11 descrevem uma abstração de
 > "provider plugável" (`payments/providers/base.py`, `fake.py`,
 > `registry.py`, a variável `PAYMENT_PROVIDER`) que já não existe no código.
@@ -733,7 +739,7 @@ voltou à etapa 2.
 | Vendeu mais bilhetes do que existem | Está a correr em SQLite? Só PostgreSQL tranca com `select_for_update()` — prove com `test_concurrency` |
 | Cliente recebe "erro interno" em vez da mensagem | `config/envelope.py` — o `exception_handler` |
 | Bilhete pago fica `pending` para sempre | Webhook não chega — falta o cron `reconcile_payments`, ou confira `payments/tests.py` |
-| Webhook dá sempre 401 | `DEBITOPAY_WEBHOOK_SECRET` errada, ou assina o corpo cru vs. o JSON re-serializado — ver `docs/pagamentos.md` |
+| Webhook dá sempre 401 | `IMALIWAY_WEBHOOK_SECRET` errada, ou assina o corpo cru vs. o JSON re-serializado — ver `docs/pagamentos.md` |
 | Pagamento chegou mas o bilhete não passa a `paid` nem a `failed` | Ficou `review` — reserva já tinha expirado ou valor/moeda divergente; ver `/admin/` e `docs/pagamentos.md` |
 | Vagas presas em reservas mortas | Falta o cron do `expire_tickets` |
 | Bilhete entra duas vezes | Falta `select_for_update` no check-in, ou `payment` não está em `Ticket.ENTRY_ALLOWED` |
