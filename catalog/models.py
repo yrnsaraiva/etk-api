@@ -48,6 +48,11 @@ class Event(models.Model):
     registration_mode = models.CharField(
         max_length=20, choices=RegistrationMode.choices, default=RegistrationMode.DIRECT
     )
+    registration_open = models.BooleanField(
+        default=True,
+        help_text="Inscrições/vendas abertas. Desmarque para encerrar (ex.: ao abrir a "
+                  "confirmação de presença); quem já tem bilhete não é afectado.",
+    )
     confirmation_opens_at = models.DateTimeField(
         null=True, blank=True,
         help_text="Quando a confirmação de presença abre. Vazio = ainda fechada "
@@ -127,6 +132,7 @@ class Event(models.Model):
             "status": self.status,
             "offersShirts": self.offers_shirts,
             "registrationMode": self.registration_mode,
+            "registrationOpen": self.registration_open,
             "confirmationOpensAt": (
                 self.confirmation_opens_at.isoformat().replace("+00:00", "Z")
                 if self.confirmation_opens_at else None
