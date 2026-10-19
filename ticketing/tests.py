@@ -108,6 +108,36 @@ class ReservaTests(Base):
         self.assertEqual(expire_stale_tickets(), 0)
 
 
+class InscricoesAbertasTests(Base):
+    def test_inscricoes_fechadas_recusam_novos_bilhetes(self):
+        self.event.registration_open = False
+        self.event.save()
+        with self.assertRaises(TicketError):
+            self.emitir()
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.price.refresh_from_db()
+        self.assertEqual(self.price.quantity_reserved, 0)
+        self.assertFalse(self.event.to_api()["registrationOpen"])
+
+    def test_pre_inscricao_com_inscricoes_fechadas_e_confirmacao_aberta(self):
+        self.event.registration_mode = Event.RegistrationMode.PREREGISTRATION
+        self.event.confirmation_opens_at = timezone.now() - timedelta(hours=1)
+        self.price.amount = Decimal("0.00")
+        self.price.save()
+        t = self.emitir()                      # ainda aberto
+        self.event.registration_open = False
+        self.event.save()
+        with self.assertRaises(TicketError):
+            self.emitir("258842222222")
+        r = self.client.post(f"/back/borrow/external/tickets/{t.id}/confirm",
+                             {"phone": t.phone}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)   # quem já está inscrito confirma
+
+    def test_por_omissao_estao_abertas(self):
+        self.assertTrue(self.event.to_api()["registrationOpen"])
+        self.emitir()
+
+
 class CamisetesTests(Base):
     def test_evento_expoe_se_tem_camisetes(self):
         self.assertFalse(self.event.to_api()["offersShirts"])        # por omissão não tem

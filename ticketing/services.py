@@ -78,6 +78,8 @@ def create_ticket(*, price_id: str, event_id: str, phone: str, issued_to,
         )
 
     event = price.event
+    if not event.registration_open:
+        raise TicketError("As inscrições para este evento estão encerradas.")
     if event.is_preregistration:
         if price.amount > 0:
             raise TicketError("A pré-inscrição só está disponível para bilhetes gratuitos.")
