@@ -431,6 +431,19 @@ class WebhookTests(Base):
         self.assertEqual(t.payment, Ticket.Payment.PENDING)
         self.assertEqual(ProviderEvent.objects.count(), 0)
 
+    def test_webhook_deixa_rasto_nos_logs(self):
+        t = self.comprar()
+        body = _webhook_body("PAYMENT.SUCCESS", t.provider_charge_id, amount=str(t.amount))
+        with self.assertLogs("payments.views", level="INFO") as logs:
+            self.client.post(WEBHOOK, data=body, content_type="application/json",
+                             HTTP_X_WEBHOOK_SIGNATURE="sha256=falsa",
+                             HTTP_X_FORWARDED_FOR="162.220.232.252, 10.0.0.1")
+            self.enviar(body)
+        texto = "\n".join(logs.output)
+        self.assertIn("recebido de 162.220.232.252", texto)
+        self.assertIn("recusado (assinatura inválida) de 162.220.232.252", texto)
+        self.assertIn("processado=True", texto)
+
     def test_replay_antigo_e_recusado(self):
         t = self.comprar()
         body = _webhook_body("PAYMENT.SUCCESS", t.provider_charge_id)
