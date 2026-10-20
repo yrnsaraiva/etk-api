@@ -21,13 +21,16 @@ def imaliway_webhook(request):
     Responde 200 a tudo o que seja autêntico — mesmo a eventos que ignoramos.
     Um 4xx faz o gateway reenviar em ciclo sem que isso resolva nada.
     """
+    ip = (request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+          or request.META.get("REMOTE_ADDR"))
+    logger.info("webhook iMali.Way recebido de %s (%d bytes)", ip, len(request.body))
     try:
         processed, message = handle_webhook(request.body, request.headers)
     except InvalidSignature:
-        logger.warning("webhook com assinatura inválida de %s",
-                       request.META.get("REMOTE_ADDR"))
+        logger.warning("webhook iMali.Way recusado (assinatura inválida) de %s", ip)
         return fail("Assinatura inválida.", status.HTTP_401_UNAUTHORIZED)
     except Exception:
         logger.exception("erro a processar webhook")
         return fail("Erro interno.", status.HTTP_500_INTERNAL_SERVER_ERROR)
+    logger.info("webhook iMali.Way de %s processado=%s: %s", ip, processed, message)
     return ok({"processed": processed}, message)
