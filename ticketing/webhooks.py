@@ -114,7 +114,7 @@ def _deliver_one(entrega: PartnerDelivery, now) -> bool:
 
     erro = ""
     try:
-        response = requests.post(url, data=body, headers=headers, timeout=(3, 30))
+        response = requests.post(url, data=body, headers=headers, timeout=(3, 15))
         ok = 200 <= response.status_code < 300
         if not ok:
             erro = f"HTTP {response.status_code}: {response.text[:200]}"

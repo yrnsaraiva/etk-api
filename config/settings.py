@@ -113,7 +113,7 @@ IMALIWAY = {
     # ultrapassa a reserva do bilhete.
     "PUSH_EXPIRATION_MINUTES": int(os.getenv("IMALIWAY_PUSH_EXPIRATION_MINUTES", "0")),
     "CONNECT_TIMEOUT": 10,      # segundos para abrir a ligação
-    "TIMEOUT": 60,              # segundos à espera da resposta
+    "TIMEOUT": 30,              # segundos à espera da resposta
 }
 # Chaves de teste (`etk_test_…`) cobram na sandbox da iMali.Way, nunca na conta live.
 # A documentação não lista um endereço separado: só as credenciais mudam.
