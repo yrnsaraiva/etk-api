@@ -99,7 +99,7 @@ SIMPLE_JWT = {"ACCESS_TOKEN_LIFETIME": timedelta(minutes=60)}
 
 # iMali.Way (Paytek) — o gateway de pagamento. Ver payments/imaliway.py.
 # As credenciais vêm sempre do ambiente; nunca ficam no repositório.
-IMALIWAY_DEFAULT_URL = "https://paytek-africa.net:11901/api/partners/imaliway/v2"
+IMALIWAY_DEFAULT_URL = "https://paytek-africa.net:11900/api/partners/imaliway/v2"
 IMALIWAY = {
     "BASE_URL": os.getenv("IMALIWAY_BASE_URL", IMALIWAY_DEFAULT_URL),
     "API_KEY": os.getenv("IMALIWAY_API_KEY", ""),
